@@ -20,13 +20,14 @@
       <button class="nav" data-view="actions">✓ <span>Action Queue</span></button>
       <button class="nav" data-view="programs">⌁ <span>Intel Programs</span></button>
       <button class="nav" data-view="connectors">↗ <span>Connectors</span></button>
+      <button class="nav" data-view="settings">⚙ <span>Settings</span></button>
     </nav>
     <div class="sidebar-note"><b>Managed intelligence</b><p>Watch what matters. Explain why. Act on it.</p></div>
   </aside>
   <main>
     <header class="topbar">
       <div><p class="eyebrow">LUCID LOGIC / MANAGED INTELLIGENCE</p><h1 id="pageTitle">Command Center</h1></div>
-      <div class="top-actions"><span id="aiBadge" class="badge">Checking AI...</span><button class="btn" id="refreshBtn">Refresh</button><button class="btn gold" id="newClientBtn">+ Add Client</button></div>
+      <div class="top-actions"><select id="clientSelect" class="client-select" aria-label="Current client"></select><span id="aiBadge" class="badge">Checking AI...</span><button class="btn" id="refreshBtn">Refresh</button><button class="btn gold" id="newClientBtn">+ Add Client</button></div>
     </header>
     <section id="view"></section>
   </main>
