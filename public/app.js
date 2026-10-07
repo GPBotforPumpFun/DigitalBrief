@@ -164,13 +164,20 @@ function connectorsView(){
 function settingsView(){
   const st=state.settings||{};
   const savedCode=localStorage.getItem("intelSettingsCode")||"";
-  return '<div class="panel"><div class="panel-head"><div><h2>System Settings</h2><div class="muted">Platform-level configuration. Client data remains separated by workspace.</div></div></div>'+
-  '<div class="split"><div><div class="connector"><h3>OpenAI research engine</h3><p class="muted">Status: <b>'+(st.aiConfigured?'Connected':'Not connected')+'</b>'+(st.masked?' · '+esc(st.masked):'')+'</p>'+
-  '<p class="muted">The API key is encrypted before it is stored and is never displayed again.</p>'+
-  '<form id="openaiSettingsForm"><div class="field"><label>Settings access code</label><input id="settingsCode" type="password" value="'+esc(savedCode)+'" autocomplete="current-password"></div>'+
-  '<div class="field"><label>OpenAI API key</label><input id="openaiKey" type="password" placeholder="sk-..." autocomplete="off"></div>'+
-  '<div class="actions"><button class="btn gold" type="submit">Save + Verify Key</button>'+(st.source==="dashboard"?'<button class="btn danger" type="button" onclick="clearOpenAIKey()">Remove saved key</button>':'')+'</div></form></div></div>'+
-  '<div><div class="profile-box"><h3>CLIENT SEPARATION</h3><p>The selector in the top bar now defines the active client workspace. Signals, actions, programs and Command Center metrics are scoped to that client. Choose <b>All Clients</b> only when you intentionally want the Lucid Logic master view.</p></div>'+
+  return '<div class="panel"><div class="panel-head"><div><h2>System Settings</h2><div class="muted">Platform-level configuration for research and client delivery.</div></div></div>'+
+  '<div class="split"><div>'+
+  '<div class="connector"><h3>OpenAI research engine</h3><p class="muted">Status: <b>'+(st.aiConfigured?'Connected':'Not connected')+'</b>'+(st.masked?' · '+esc(st.masked):'')+'</p>'+
+  '<form id="openaiSettingsForm"><div class="field"><label>Settings access code</label><input id="settingsCode" type="password" value="'+esc(savedCode)+'"></div>'+
+  '<div class="field"><label>OpenAI API key</label><input id="openaiKey" type="password" placeholder="sk-..."></div>'+
+  '<div class="actions"><button class="btn gold" type="submit">Save + Verify Key</button>'+(st.source==="dashboard"?'<button class="btn danger" type="button" onclick="clearOpenAIKey()">Remove saved key</button>':'')+'</div></form></div>'+
+  '<div class="connector"><h3>Daily brief email delivery</h3><p class="muted">Status: <b>'+(st.emailConfigured?'Connected':'Not connected')+'</b>'+(st.emailMasked?' · '+esc(st.emailMasked):'')+'</p>'+
+  '<p class="muted">Briefs go to active client portal users. Action buttons use secure links that open the exact portal item.</p>'+
+  '<form id="emailSettingsForm"><div class="field"><label>Settings access code</label><input id="emailSettingsCode" type="password" value="'+esc(savedCode)+'"></div>'+
+  '<div class="field"><label>Resend API key</label><input id="resendKey" type="password" placeholder="re_..."></div>'+
+  '<div class="field"><label>From address</label><input id="emailFrom" value="'+esc(st.emailFrom||"")+'" placeholder="Lucid Logic Intelligence &lt;intel@example.com&gt;"></div>'+
+  '<button class="btn gold" type="submit">Save + Verify Email</button></form>'+
+  '<form id="testEmailForm" class="test-email-form"><div class="field"><label>Send test to</label><input id="testEmailTo" type="email" placeholder="you@example.com"></div><button class="btn small" type="submit">Send test email</button></form></div></div>'+
+  '<div><div class="profile-box"><h3>READ IN EMAIL. ACT IN THE PORTAL.</h3><p>The brief is the default delivery experience. Clients enter the portal when a decision, review or execution step is needed.</p></div>'+
   '<div class="connector"><h3>Research model</h3><p class="muted">'+esc("Current model: "+(st.model||"GPT-5.6"))+'</p></div></div></div></div>';
 }
 const titles={overview:"Command Center",clients:"Clients",signals:"Signal Feed",opportunities:"Opportunities",actions:"Action Queue",programs:"Intel Programs",connectors:"Connectors",settings:"Settings"};
