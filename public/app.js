@@ -159,7 +159,7 @@ window.openClient=async function(id){
     const priorities=Array.isArray(p.priorities)?'<div class="code">• '+esc(p.priorities.join("\n• "))+'</div>':"";
     modal('<h2 class="section-title">'+esc(c.name)+'</h2><p class="section-sub">'+esc(c.website_url||"")+' · '+esc(c.industry||"")+'</p>'+
     '<div class="split"><div><div class="panel"><h3>Intelligence mandate</h3><p>'+esc(c.objective||"Not defined yet.")+'</p><button class="btn gold" onclick="discover('+c.id+')">Analyze website + design intel</button></div>'+
-    '<div class="panel"><h3>Programs</h3>'+programs+'</div></div><div><div class="profile-box"><h3>WEBSITE-DERIVED PROFILE</h3><p>'+esc(p.summary||"Run Analyze website to create a business-specific source and action blueprint.")+'</p>'+priorities+'</div>'+
+    '<div class="panel"><div class="panel-head"><h3>Programs</h3><button class="btn small" onclick="programForm('+c.id+')">+ Add program</button></div>'+programs+'</div></div><div><div class="profile-box"><h3>WEBSITE-DERIVED PROFILE</h3><p>'+esc(p.summary||"Run Analyze website to create a business-specific source and action blueprint.")+'</p>'+priorities+'</div>'+
     '<div class="panel"><h3>Connect action channel</h3><p class="muted">Website, social, webhook or delivery integration.</p><button class="btn" onclick="connectorForm('+c.id+')">+ Add connector</button><div style="margin-top:12px">'+connectors+'</div></div></div></div>');
   }catch(e){toast(e.message)}
 };
@@ -184,6 +184,30 @@ window.approveAction=async function(id){
 window.dismissAction=async function(id){
   try{await api("/api/actions/"+id+"/dismiss",{method:"POST",body:"{}"});toast("Dismissed");await load()}catch(e){toast(e.message)}
 };
+window.programForm=function(id){
+  modal('<h2 class="section-title">Add intelligence program</h2><p class="section-sub">Define exactly what Lucid Logic should watch and what actions may follow.</p>'+
+  '<form id="programForm"><div class="form-grid"><div class="field"><label>Program name</label><input name="name" required placeholder="Revenue Opportunity Radar"></div>'+
+  '<div class="field"><label>Type</label><select name="program_type"><option value="opportunity">Opportunity</option><option value="competitor">Competitor</option><option value="visibility">Reputation + AI Visibility</option><option value="industry">Industry</option><option value="account">Account</option><option value="custom">Custom</option></select></div>'+
+  '<div class="field"><label>Cadence</label><select name="cadence"><option value="weekday">Weekdays</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select></div>'+
+  '<div class="field full"><label>Objective</label><textarea name="objective" required placeholder="What should this program detect, and why does it matter?"></textarea></div>'+
+  '<div class="field full"><label>Sources / queries, one per line</label><textarea name="sources" placeholder="RFP portals\nIndustry association\nSpecific competitor URLs"></textarea></div>'+
+  '<div class="field full"><label>Allowed actions, comma-separated</label><input name="actions" value="alert, social_post, website_post, proposal, questions, outreach"></div></div>'+
+  '<button class="btn gold">Create program</button></form>');
+  setTimeout(function(){
+    q("#programForm").onsubmit=async function(e){
+      e.preventDefault();
+      const f=Object.fromEntries(new FormData(e.target));
+      const body={client_id:id,name:f.name,program_type:f.program_type,cadence:f.cadence,objective:f.objective,source_plan:String(f.sources||"").split(/\n+/).map(function(x){return x.trim()}).filter(Boolean),action_plan:String(f.actions||"").split(",").map(function(x){return x.trim()}).filter(Boolean)};
+      try{
+        await api("/api/programs",{method:"POST",body:JSON.stringify(body)});
+        toast("Program created");
+        window.openClient(id);
+        load();
+      }catch(x){toast(x.message)}
+    };
+  },0);
+};
+
 window.connectorForm=function(id){
   modal('<h2 class="section-title">Add action connector</h2><p class="section-sub">Secrets are encrypted before storage.</p>'+
   '<form id="connectorForm"><div class="field"><label>Connector type</label><select name="connector_type"><option value="wordpress">WordPress</option><option value="webhook">Static / Railway webhook</option><option value="social_webhook">Social publishing webhook</option></select></div>'+
