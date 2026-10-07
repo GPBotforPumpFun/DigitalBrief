@@ -1,6 +1,6 @@
 const q=function(s){return document.querySelector(s)};
 const qa=function(s){return Array.from(document.querySelectorAll(s))};
-const state={data:null,view:"overview",clientId:localStorage.getItem("intelClientId")||"all",settings:null};
+const state={data:null,view:"overview",clientId:localStorage.getItem("intelClientId")||"all",settings:null,oppSort:"fit",oppStatus:"active"};
 
 function esc(v){return String(v==null?"":v).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})}
 function nice(v){return String(v||"").replaceAll("_"," ").replace(/\b\w/g,function(c){return c.toUpperCase()})}
@@ -125,13 +125,48 @@ function signalsView(){
   return '<div class="panel"><div class="panel-head"><div><h2>Signal feed</h2><div class="muted">Only material changes for '+esc(currentClient()?currentClient().name:"all managed clients")+', with business impact and action options attached.</div></div></div>'+
   (items.map(signalCard).join("")||'<div class="empty">No signals yet for this client.</div>')+'</div>';
 }
+function sortOpportunities(items,sort){
+  const list=items.slice();
+  list.sort(function(a,b){
+    if(sort==="deadline"){
+      const ad=a.deadline?new Date(a.deadline+"T12:00:00").getTime():Number.MAX_SAFE_INTEGER;
+      const bd=b.deadline?new Date(b.deadline+"T12:00:00").getTime():Number.MAX_SAFE_INTEGER;
+      if(ad!==bd)return ad-bd;
+      return Number(b.fit_score||0)-Number(a.fit_score||0);
+    }
+    if(sort==="newest") return new Date(b.created_at)-new Date(a.created_at);
+    if(sort==="oldest") return new Date(a.created_at)-new Date(b.created_at);
+    if(sort==="status"){
+      const rank={pursue:0,review:1,pass:2};
+      const d=(rank[a.pursuit_status]??9)-(rank[b.pursuit_status]??9);
+      if(d!==0)return d;
+    }
+    const fit=Number(b.fit_score||0)-Number(a.fit_score||0);
+    if(fit!==0)return fit;
+    return new Date(b.created_at)-new Date(a.created_at);
+  });
+  return list;
+}
+function filterOpportunities(items,status){
+  if(status==="all") return items;
+  if(status==="active") return items.filter(function(o){return o.pursuit_status!=="pass"});
+  return items.filter(function(o){return o.pursuit_status===status});
+}
+function opportunityControls(){
+  return '<div class="opp-controls"><div class="opp-control-group"><span>Status</span><select onchange="setAdminOppStatus(this.value)">'+
+    ['active','review','pursue','pass','all'].map(function(v){return '<option value="'+v+'" '+(state.oppStatus===v?'selected':'')+'>'+esc(v==='active'?'Active':nice(v))+'</option>'}).join('')+
+    '</select></div><div class="opp-control-group"><span>Sort</span><select onchange="setAdminOppSort(this.value)">'+
+    [['fit','Best fit'],['deadline','Deadline soonest'],['newest','Newest found'],['oldest','Oldest found'],['status','Pursuit status']].map(function(v){return '<option value="'+v[0]+'" '+(state.oppSort===v[0]?'selected':'')+'>'+v[1]+'</option>'}).join('')+
+    '</select></div></div>';
+}
+window.setAdminOppStatus=function(v){state.oppStatus=v;render()};
+window.setAdminOppSort=function(v){state.oppSort=v;render()};
 function opportunitiesView(){
-  const items=scoped(state.data.opportunities||[]);
-  const active=items.filter(function(o){return o.pursuit_status!=="pass"});
-  const passed=items.filter(function(o){return o.pursuit_status==="pass"});
-  return '<div class="panel"><div class="panel-head"><div><h2>Opportunity workspace</h2><div class="muted">RFPs, grants and revenue opportunities, with the source document, deadlines, pursuit decision and generated work in one place.</div></div></div>'+
-  (active.map(opportunityCard).join("")||'<div class="empty">No active opportunities yet for this client.</div>')+
-  (passed.length?'<h3 style="margin-top:28px">Passed</h3>'+passed.map(opportunityCard).join(""):"")+'</div>';
+  const all=scoped(state.data.opportunities||[]);
+  const items=sortOpportunities(filterOpportunities(all,state.oppStatus),state.oppSort);
+  return '<div class="panel"><div class="panel-head opportunity-head"><div><h2>Opportunity workspace</h2><div class="muted">RFPs, grants and revenue opportunities, with the source document, deadlines, pursuit decision and generated work in one place.</div></div>'+opportunityControls()+'</div>'+
+  '<div class="opp-result-count">'+items.length+' of '+all.length+' opportunities</div>'+
+  (items.map(opportunityCard).join("")||'<div class="empty">No opportunities match this view.</div>')+'</div>';
 }
 function actionsView(){
   const groups=["proposed","approved","executed","dismissed"];
