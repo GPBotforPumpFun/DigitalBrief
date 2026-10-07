@@ -1,6 +1,6 @@
 const q=s=>document.querySelector(s);
 const qa=s=>Array.from(document.querySelectorAll(s));
-const state={me:null,data:null,view:"overview",intelProgram:"all"};
+const state={me:null,data:null,view:"overview",intelProgram:"all",oppSort:"fit",oppStatus:"active"};
 
 function esc(v){return String(v==null?"":v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 function nice(v){return String(v||"").replaceAll("_"," ").replace(/\b\w/g,c=>c.toUpperCase())}
@@ -125,12 +125,48 @@ function overview(){
   '<div class="panel watch-panel"><div class="panel-head"><div><h2>What we are watching</h2><p class="muted">You do not need to manage these. Lucid Logic does.</p></div></div>'+programs+'</div></div>';
 }
 
+function sortOpportunities(items,sort){
+  const list=items.slice();
+  list.sort((a,b)=>{
+    if(sort==="deadline"){
+      const ad=a.deadline?new Date(a.deadline+"T12:00:00").getTime():Number.MAX_SAFE_INTEGER;
+      const bd=b.deadline?new Date(b.deadline+"T12:00:00").getTime():Number.MAX_SAFE_INTEGER;
+      if(ad!==bd)return ad-bd;
+      return Number(b.fit_score||0)-Number(a.fit_score||0);
+    }
+    if(sort==="newest") return new Date(b.created_at)-new Date(a.created_at);
+    if(sort==="oldest") return new Date(a.created_at)-new Date(b.created_at);
+    if(sort==="status"){
+      const rank={pursue:0,review:1,pass:2};
+      const d=(rank[a.pursuit_status]??9)-(rank[b.pursuit_status]??9);
+      if(d!==0)return d;
+    }
+    const fit=Number(b.fit_score||0)-Number(a.fit_score||0);
+    if(fit!==0)return fit;
+    return new Date(b.created_at)-new Date(a.created_at);
+  });
+  return list;
+}
+function filterOpportunities(items,status){
+  if(status==="all") return items;
+  if(status==="active") return items.filter(o=>o.pursuit_status!=="pass");
+  return items.filter(o=>o.pursuit_status===status);
+}
+function opportunityControls(){
+  return '<div class="opp-controls"><div class="opp-control-group"><span>Status</span><select onchange="setOppStatusFilter(this.value)">'+
+    ['active','review','pursue','pass','all'].map(v=>'<option value="'+v+'" '+(state.oppStatus===v?'selected':'')+'>'+esc(v==='active'?'Active':nice(v))+'</option>').join('')+
+    '</select></div><div class="opp-control-group"><span>Sort</span><select onchange="setOppSort(this.value)">'+
+    [['fit','Best fit'],['deadline','Deadline soonest'],['newest','Newest found'],['oldest','Oldest found'],['status','Pursuit status']].map(v=>'<option value="'+v[0]+'" '+(state.oppSort===v[0]?'selected':'')+'>'+v[1]+'</option>').join('')+
+    '</select></div></div>';
+}
+window.setOppStatusFilter=v=>{state.oppStatus=v;render()};
+window.setOppSort=v=>{state.oppSort=v;render()};
 function opportunities(){
-  const active=state.data.opportunities.filter(o=>o.pursuit_status!=="pass");
-  const passed=state.data.opportunities.filter(o=>o.pursuit_status==="pass");
+  const all=state.data.opportunities||[];
+  const items=sortOpportunities(filterOpportunities(all,state.oppStatus),state.oppSort);
   return '<div class="page-intro"><div class="page-icon">◆</div><div><h2>Opportunities</h2><p>Revenue opportunities that require an actual pursuit decision. The RFP or source, deadlines, fit analysis and next steps live here.</p></div></div>'+
-  '<div class="panel opportunities-panel"><div class="section-label">ACTIVE</div>'+(active.map(opportunityCard).join("")||'<div class="empty">No active opportunities.</div>')+
-  (passed.length?'<div class="section-label passed-label">PASSED</div>'+passed.map(opportunityCard).join(""):'')+'</div>';
+  '<div class="panel opportunities-panel"><div class="opp-toolbar"><div><div class="section-label">OPPORTUNITY PIPELINE</div><div class="muted">'+items.length+' of '+all.length+' shown</div></div>'+opportunityControls()+'</div>'+
+  (items.map(opportunityCard).join("")||'<div class="empty">No opportunities match this view.</div>')+'</div>';
 }
 
 function intelligence(){
