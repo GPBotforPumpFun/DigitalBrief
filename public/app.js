@@ -43,6 +43,13 @@ function syncClientSelect(){
 function metric(label,value,sub){
   return '<div class="metric"><div class="label">'+esc(label)+'</div><div class="value">'+esc(value)+'</div><div class="sub">'+esc(sub)+'</div></div>';
 }
+function metadataBadges(meta){
+  if(!meta||typeof meta!=="object") return "";
+  const preferred=["competitor","company","account","trigger","change_type","platform","metric","old_value","new_value","query","regulator","topic","effective_date","contact"];
+  const keys=preferred.filter(function(k){return meta[k]!==undefined&&meta[k]!==null&&String(meta[k]).trim()!==""}).slice(0,5);
+  if(!keys.length) return "";
+  return '<div class="signal-meta">'+keys.map(function(k){return '<span><b>'+esc(nice(k))+':</b> '+esc(typeof meta[k]==="object"?JSON.stringify(meta[k]):meta[k])+'</span>'}).join("")+'</div>';
+}
 function signalCard(s){
   let buttons="";
   if(s.source_url){
@@ -56,7 +63,7 @@ function signalCard(s){
   '<div class="meta"><span>'+esc(s.client_name||"")+'</span><span>•</span><span>'+esc(s.program_name||"")+'</span><span>•</span><span>'+ago(s.created_at)+'</span>'+
   '<span class="pill '+(s.importance>=3?"high":"")+'">'+(s.importance>=3?"High priority":"Material")+'</span></div></div>'+
   '<span class="pill">'+esc(s.confidence||70)+'% confidence</span></div>'+
-  '<p>'+esc(s.what_changed)+'</p><div class="why"><b>Why it matters:</b> '+esc(s.why_it_matters)+'</div>'+buttons+'</article>';
+  '<p>'+esc(s.what_changed)+'</p>'+metadataBadges(s.metadata)+'<div class="why"><b>Why it matters:</b> '+esc(s.why_it_matters)+'</div>'+buttons+'</article>';
 }
 function actionCard(a){
   const p=a.payload||{};
@@ -135,11 +142,14 @@ function actionsView(){
   }).join("")+'</div>';
 }
 function programsView(){
-  const html=scoped(state.data.programs).map(function(p){
-    return '<div class="program"><div class="type">'+esc(p.program_type)+' · '+esc(p.cadence)+'</div><h3>'+esc(p.name)+'</h3><p>'+esc(p.objective)+'</p>'+
-    '<div class="meta">Client: '+esc(p.client_name)+' · Last run: '+ago(p.last_run_at)+'</div><div class="actions"><button class="btn gold small" onclick="runProgram('+p.id+')">Run now</button></div></div>';
+  const items=scoped(state.data.programs);
+  const html=items.map(function(p){
+    return '<div class="program program-admin"><div class="row"><div><div class="type">'+esc(p.program_type)+' · '+esc(p.cadence)+'</div><h3>'+esc(p.name)+'</h3></div>'+
+    '<span class="pill '+(p.active?"":"high")+'">'+(p.active?"Active":"Paused")+'</span></div><p>'+esc(p.objective)+'</p>'+
+    '<div class="program-flags"><span class="pill">'+(p.client_visible?"Visible to client":"Admin only")+'</span><span class="pill">Last run: '+ago(p.last_run_at)+'</span></div>'+
+    '<div class="actions"><button class="btn small" onclick="openProgram('+p.id+')">Program details</button><button class="btn gold small" onclick="runProgram('+p.id+')">Run now</button></div></div>';
   }).join("");
-  return '<div class="panel"><div class="panel-head"><div><h2>Intelligence programs</h2><div class="muted">Define what to watch, why it matters, how often to scan and what actions can result.</div></div></div><div class="program-list">'+html+'</div></div>';
+  return '<div class="panel"><div class="panel-head"><div><h2>Intelligence programs</h2><div class="muted">Configure exactly what each program watches, how it judges relevance, what clients can see, and what actions it can create.</div></div></div><div class="program-list">'+(html||'<div class="empty">No programs for this client.</div>')+'</div></div>';
 }
 function connectorsView(){
   return '<div class="panel"><div class="panel-head"><div><h2>Action connectors</h2><div class="muted">Connect intelligence to execution without needing access to a client mailbox.</div></div></div>'+
@@ -268,7 +278,7 @@ window.openClient=async function(id){
     const x=await api("/api/clients/"+id);
     const c=x.client,p=c.profile||{};
     const programs=x.programs.map(function(pr){
-      return '<div class="program"><div class="type">'+esc(pr.program_type)+' · '+esc(pr.cadence)+'</div><b>'+esc(pr.name)+'</b><p>'+esc(pr.objective)+'</p><button class="btn small" onclick="runProgram('+pr.id+')">Run now</button></div>';
+      return '<div class="program"><div class="type">'+esc(pr.program_type)+' · '+esc(pr.cadence)+'</div><b>'+esc(pr.name)+'</b><p>'+esc(pr.objective)+'</p><div class="program-flags"><span class="pill">'+(pr.client_visible?"Client visible":"Admin only")+'</span><span class="pill">'+(pr.active?"Active":"Paused")+'</span></div><div class="actions"><button class="btn small" onclick="openProgram('+pr.id+')">Details</button><button class="btn gold small" onclick="runProgram('+pr.id+')">Run now</button></div></div>';
     }).join("")||'<div class="empty">No programs yet.</div>';
     const connectors=x.connectors.map(function(k){return '<span class="pill">'+esc(k.name)+'</span>'}).join(" ");
     const priorities=Array.isArray(p.priorities)?'<div class="code">• '+esc(p.priorities.join("\n• "))+'</div>':"";
@@ -328,20 +338,76 @@ window.approveAction=async function(id){
 window.dismissAction=async function(id){
   try{await api("/api/actions/"+id+"/dismiss",{method:"POST",body:"{}"});toast("Dismissed");await load()}catch(e){toast(e.message)}
 };
+window.openProgram=async function(id){
+  try{
+    const x=await api("/api/programs/"+id);
+    const p=x.program;
+    const sources=Array.isArray(p.source_plan)&&p.source_plan.length?'<div class="source-list">'+p.source_plan.map(function(v){return '<div class="source-row">'+esc(v)+'</div>'}).join("")+'</div>':'<div class="empty">No specific sources configured.</div>';
+    const allowed=Array.isArray(p.action_plan)&&p.action_plan.length?p.action_plan.map(function(v){return '<span class="pill action">'+esc(nice(v))+'</span>'}).join(" "):'<span class="muted">None configured</span>';
+    const runs=(x.runs||[]).slice(0,10).map(function(r){
+      const m=r.run_meta||{},u=m.usage||{},rej=Array.isArray(m.rejected_notes)&&m.rejected_notes.length?'<div class="run-rejected"><b>Noise rejected:</b> '+esc(m.rejected_notes.join(" · "))+'</div>':"";
+      const usage=(u.total_tokens||u.input_tokens||u.output_tokens)?' · Tokens '+esc(u.total_tokens||((u.input_tokens||0)+(u.output_tokens||0))):"";
+      return '<div class="run-row"><div><b>'+esc(nice(r.status))+'</b><span>'+new Date(r.created_at).toLocaleString()+' · Accepted '+esc(r.accepted_count||0)+' · Rejected '+esc(r.rejected_count||0)+usage+'</span></div><div class="run-summary">'+esc(r.summary||"No summary")+'</div>'+rej+'</div>';
+    }).join("")||'<div class="empty">This program has not run yet.</div>';
+    const findings=(x.signals||[]).slice(0,8).map(function(sig){return '<div class="finding-row"><div><b>'+esc(sig.title)+'</b><span>'+ago(sig.created_at)+' · '+esc(sig.confidence||70)+'% confidence</span></div>'+metadataBadges(sig.metadata)+'</div>'}).join("")||'<div class="empty">No accepted intelligence yet.</div>';
+    modal('<div class="program-detail-head"><div><div class="type">'+esc(p.program_type)+' · '+esc(p.cadence)+'</div><h2 class="section-title">'+esc(p.name)+'</h2><p class="section-sub">'+esc(p.client_name)+' · '+(p.active?"Active":"Paused")+' · '+(p.client_visible?"Visible in client portal":"Admin only")+'</p></div>'+
+    '<div class="actions"><button class="btn" onclick="editProgram('+p.id+')">Edit program</button><button class="btn gold" onclick="runProgramFromDetail('+p.id+')">Run now</button></div></div>'+
+    '<div class="program-detail-grid"><div><div class="panel"><h3>Objective</h3><p>'+esc(p.objective)+'</p>'+(p.analyst_instructions?'<div class="why"><b>Analyst instructions:</b> '+esc(p.analyst_instructions)+'</div>':'')+'</div>'+
+    '<div class="panel"><h3>Sources / monitoring instructions</h3>'+sources+'</div><div class="panel"><h3>Allowed actions</h3><div class="actions">'+allowed+'</div></div></div>'+
+    '<div><div class="panel"><h3>Run history</h3>'+runs+'</div><div class="panel"><h3>Recent accepted intelligence</h3>'+findings+'</div></div></div>');
+  }catch(e){toast(e.message)}
+};
+window.runProgramFromDetail=async function(id){
+  toast("Research run started...");
+  try{
+    const r=await api("/api/programs/"+id+"/run",{method:"POST",body:"{}"});
+    toast(r.status==="needs_configuration"?"Add your OpenAI key in Settings":"Research complete: "+(r.count||0)+" accepted, "+(r.rejected||0)+" rejected");
+    await load();
+    window.openProgram(id);
+  }catch(e){toast(e.message)}
+};
+window.editProgram=async function(id){
+  try{
+    const x=await api("/api/programs/"+id),p=x.program;
+    modal('<h2 class="section-title">Edit intelligence program</h2><p class="section-sub">Control exactly what we monitor, how we judge it and what the client can see.</p>'+
+    '<form id="editProgramForm"><div class="form-grid">'+
+    '<div class="field"><label>Program name</label><input name="name" required value="'+esc(p.name)+'"></div>'+
+    '<div class="field"><label>Type</label><select name="program_type">'+["opportunity","competitor","visibility","industry","account","custom"].map(function(v){return '<option value="'+v+'" '+(p.program_type===v?"selected":"")+'>'+nice(v)+'</option>'}).join("")+'</select></div>'+
+    '<div class="field"><label>Cadence</label><select name="cadence">'+["daily","weekday","weekly","monthly"].map(function(v){return '<option value="'+v+'" '+(p.cadence===v?"selected":"")+'>'+nice(v)+'</option>'}).join("")+'</select></div>'+
+    '<div class="field"><label>Status</label><select name="active"><option value="true" '+(p.active?"selected":"")+'>Active</option><option value="false" '+(!p.active?"selected":"")+'>Paused</option></select></div>'+
+    '<div class="field full"><label>Objective</label><textarea name="objective" required>'+esc(p.objective||"")+'</textarea></div>'+
+    '<div class="field full"><label>Analyst instructions</label><textarea name="analyst_instructions" placeholder="Specific judgment rules, exclusions, geography, thresholds, competitors, terminology...">'+esc(p.analyst_instructions||"")+'</textarea></div>'+
+    '<div class="field full"><label>Sources / queries, one per line</label><textarea name="sources">'+esc((p.source_plan||[]).join("\n"))+'</textarea></div>'+
+    '<div class="field full"><label>Allowed actions, comma-separated</label><input name="actions" value="'+esc((p.action_plan||[]).join(", "))+'"></div>'+
+    '<div class="field full check-field"><label><input type="checkbox" name="client_visible" '+(p.client_visible?"checked":"")+'> Show this program and its intelligence in the client portal</label></div></div>'+
+    '<button class="btn gold" type="submit">Save program</button></form>');
+    setTimeout(function(){
+      q("#editProgramForm").onsubmit=async function(e){
+        e.preventDefault();
+        const f=Object.fromEntries(new FormData(e.target));
+        const body={name:f.name,program_type:f.program_type,cadence:f.cadence,objective:f.objective,active:f.active==="true",client_visible:q('#editProgramForm input[name="client_visible"]').checked,analyst_instructions:f.analyst_instructions||null,source_plan:String(f.sources||"").split(/\n+/).map(function(v){return v.trim()}).filter(Boolean),action_plan:String(f.actions||"").split(",").map(function(v){return v.trim()}).filter(Boolean)};
+        try{await api("/api/programs/"+id,{method:"PATCH",body:JSON.stringify(body)});toast("Program updated");await load();window.openProgram(id)}catch(err){toast(err.message)}
+      };
+    },0);
+  }catch(e){toast(e.message)}
+};
+
 window.programForm=function(id){
   modal('<h2 class="section-title">Add intelligence program</h2><p class="section-sub">Define exactly what Lucid Logic should watch and what actions may follow.</p>'+
   '<form id="programForm"><div class="form-grid"><div class="field"><label>Program name</label><input name="name" required placeholder="Revenue Opportunity Radar"></div>'+
   '<div class="field"><label>Type</label><select name="program_type"><option value="opportunity">Opportunity</option><option value="competitor">Competitor</option><option value="visibility">Reputation + AI Visibility</option><option value="industry">Industry</option><option value="account">Account</option><option value="custom">Custom</option></select></div>'+
   '<div class="field"><label>Cadence</label><select name="cadence"><option value="weekday">Weekdays</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select></div>'+
   '<div class="field full"><label>Objective</label><textarea name="objective" required placeholder="What should this program detect, and why does it matter?"></textarea></div>'+
+  '<div class="field full"><label>Analyst instructions</label><textarea name="analyst_instructions" placeholder="What should be included or excluded? Geography, thresholds, competitors, terminology, decision rules..."></textarea></div>'+
   '<div class="field full"><label>Sources / queries, one per line</label><textarea name="sources" placeholder="RFP portals\nIndustry association\nSpecific competitor URLs"></textarea></div>'+
-  '<div class="field full"><label>Allowed actions, comma-separated</label><input name="actions" value="alert, social_post, website_post, proposal, questions, outreach"></div></div>'+
+  '<div class="field full"><label>Allowed actions, comma-separated</label><input name="actions" value="alert, social_post, website_post, proposal, questions, outreach"></div>'+
+  '<div class="field full check-field"><label><input type="checkbox" name="client_visible" checked> Show this program and its intelligence in the client portal</label></div></div>'+
   '<button class="btn gold">Create program</button></form>');
   setTimeout(function(){
     q("#programForm").onsubmit=async function(e){
       e.preventDefault();
       const f=Object.fromEntries(new FormData(e.target));
-      const body={client_id:id,name:f.name,program_type:f.program_type,cadence:f.cadence,objective:f.objective,source_plan:String(f.sources||"").split(/\n+/).map(function(x){return x.trim()}).filter(Boolean),action_plan:String(f.actions||"").split(",").map(function(x){return x.trim()}).filter(Boolean)};
+      const body={client_id:id,name:f.name,program_type:f.program_type,cadence:f.cadence,objective:f.objective,analyst_instructions:f.analyst_instructions||null,client_visible:q('#programForm input[name="client_visible"]').checked,source_plan:String(f.sources||"").split(/\n+/).map(function(x){return x.trim()}).filter(Boolean),action_plan:String(f.actions||"").split(",").map(function(x){return x.trim()}).filter(Boolean)};
       try{
         await api("/api/programs",{method:"POST",body:JSON.stringify(body)});
         toast("Program created");
