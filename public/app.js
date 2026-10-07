@@ -71,19 +71,37 @@ function actionCard(a){
   '<span class="pill">'+esc(nice(a.status))+'</span></div>'+
   (a.rationale?'<p class="muted">'+esc(a.rationale)+'</p>':"")+body+buttons+'</article>';
 }
+
+function opportunityCard(o){
+  const source=o.document_url||o.source_url||"";
+  const due=o.deadline?new Date(o.deadline+"T12:00:00").toLocaleDateString():"Not found";
+  const qa=o.qa_deadline?new Date(o.qa_deadline+"T12:00:00").toLocaleDateString():"Not found";
+  const reqs=Array.isArray(o.requirements)&&o.requirements.length?'<div class="opp-req"><b>Key requirements</b><ul>'+o.requirements.slice(0,6).map(function(r){return '<li>'+esc(typeof r==="string"?r:JSON.stringify(r))+'</li>'}).join("")+'</ul></div>':"";
+  return '<article class="opportunity-card"><div class="row"><div><div class="meta"><span>'+esc(o.client_name||"")+'</span><span>•</span><span>'+esc(nice(o.opportunity_type||"opportunity"))+'</span><span>•</span><span>'+esc(o.program_name||"")+'</span></div><h3>'+esc(o.title)+'</h3></div>'+
+  '<div class="fit-score"><strong>'+esc(o.fit_score||0)+'</strong><span>FIT</span></div></div>'+
+  '<p>'+esc(o.summary||"")+'</p><div class="opp-meta"><div><span>Proposal due</span><b>'+esc(due)+'</b></div><div><span>Q&A due</span><b>'+esc(qa)+'</b></div><div><span>Est. value</span><b>'+esc(o.estimated_value||"Unknown")+'</b></div><div><span>Status</span><b>'+esc(nice(o.pursuit_status))+'</b></div></div>'+
+  (o.recommendation?'<div class="why"><b>Recommendation:</b> '+esc(o.recommendation)+'</div>':"")+reqs+
+  '<div class="actions">'+(source?'<a class="btn small" href="'+esc(source)+'" target="_blank">View RFP / source ↗</a>':"")+
+  '<button class="btn small" onclick="setOpportunityStatus('+o.id+',&quot;pursue&quot;)">Pursue</button>'+
+  '<button class="btn small danger" onclick="setOpportunityStatus('+o.id+',&quot;pass&quot;)">Pass</button>'+
+  (o.signal_id?'<button class="btn small" onclick="generateAction('+o.signal_id+',&quot;questions&quot;)">Generate questions</button><button class="btn gold small" onclick="generateAction('+o.signal_id+',&quot;proposal&quot;)">Build proposal</button>':"")+
+  '</div></article>';
+}
 function overview(){
   const d=state.data;
-  const programs=scoped(d.programs),signals=scoped(d.signals),actions=scoped(d.actions);
+  const programs=scoped(d.programs),signals=scoped(d.signals),actions=scoped(d.actions),opps=scoped(d.opportunities||[]);
   const pending=actions.filter(function(a){return a.status==="proposed"}).length;
-  const hi=signals.filter(function(x){return x.importance>=3}).length;
+  const activeOpps=opps.filter(function(o){return o.pursuit_status!=="pass"}).length;
   const client=currentClient();
   return '<div class="metrics">'+
   metric(client?"Client workspace":"Active clients",client?client.name:d.clients.length,client?"Scoped dashboard":"Managed in one operating system")+
   metric("Live intel programs",programs.filter(function(p){return p.active}).length,"Revenue, market, visibility and account watches")+
-  metric("Actions waiting",pending,"Human approval before execution")+
-  metric("High-priority signals",hi,"Material items requiring attention")+'</div>'+
+  metric("Active opportunities",activeOpps,"RFPs, grants and qualified pursuits")+
+  metric("Actions waiting",pending,"Human approval before execution")+'</div>'+
   '<div class="grid"><div><div class="panel"><div class="panel-head"><h2>Latest material signals</h2><button class="btn small" onclick="go(&quot;signals&quot;)">View all</button></div>'+
-  (signals.length?signals.slice(0,6).map(signalCard).join(""):'<div class="empty">No signals yet for this client.</div>')+
+  (signals.length?signals.slice(0,5).map(signalCard).join(""):'<div class="empty">No signals yet for this client.</div>')+
+  '</div><div class="panel"><div class="panel-head"><h2>Open opportunities</h2><button class="btn small" onclick="go(&quot;opportunities&quot;)">Open workspace</button></div>'+
+  (opps.filter(function(o){return o.pursuit_status!=="pass"}).slice(0,4).map(opportunityCard).join("")||'<div class="empty">No opportunities yet for this client.</div>')+
   '</div></div><div><div class="panel"><div class="panel-head"><h2>Action queue</h2><button class="btn small" onclick="go(&quot;actions&quot;)">Open queue</button></div>'+
   (actions.filter(function(a){return a.status==="proposed"}).slice(0,5).map(actionCard).join("")||'<div class="empty">Nothing waiting for approval.</div>')+
   '</div><div class="profile-box"><h3>THE VALUE LOOP</h3><p><b>Watch → Understand → Decide → Act → Measure.</b><br><br>The brief is evidence. The product is the managed action layer that turns external change into something the client can actually do.</p></div></div></div>';
@@ -99,6 +117,14 @@ function signalsView(){
   const items=scoped(state.data.signals);
   return '<div class="panel"><div class="panel-head"><div><h2>Signal feed</h2><div class="muted">Only material changes for '+esc(currentClient()?currentClient().name:"all managed clients")+', with business impact and action options attached.</div></div></div>'+
   (items.map(signalCard).join("")||'<div class="empty">No signals yet for this client.</div>')+'</div>';
+}
+function opportunitiesView(){
+  const items=scoped(state.data.opportunities||[]);
+  const active=items.filter(function(o){return o.pursuit_status!=="pass"});
+  const passed=items.filter(function(o){return o.pursuit_status==="pass"});
+  return '<div class="panel"><div class="panel-head"><div><h2>Opportunity workspace</h2><div class="muted">RFPs, grants and revenue opportunities, with the source document, deadlines, pursuit decision and generated work in one place.</div></div></div>'+
+  (active.map(opportunityCard).join("")||'<div class="empty">No active opportunities yet for this client.</div>')+
+  (passed.length?'<h3 style="margin-top:28px">Passed</h3>'+passed.map(opportunityCard).join(""):"")+'</div>';
 }
 function actionsView(){
   const groups=["proposed","approved","executed","dismissed"];
@@ -137,12 +163,12 @@ function settingsView(){
   '<div><div class="profile-box"><h3>CLIENT SEPARATION</h3><p>The selector in the top bar now defines the active client workspace. Signals, actions, programs and Command Center metrics are scoped to that client. Choose <b>All Clients</b> only when you intentionally want the Lucid Logic master view.</p></div>'+
   '<div class="connector"><h3>Research model</h3><p class="muted">'+esc("Current model: "+(st.model||"GPT-5.6"))+'</p></div></div></div></div>';
 }
-const titles={overview:"Command Center",clients:"Clients",signals:"Signal Feed",actions:"Action Queue",programs:"Intel Programs",connectors:"Connectors",settings:"Settings"};
+const titles={overview:"Command Center",clients:"Clients",signals:"Signal Feed",opportunities:"Opportunities",actions:"Action Queue",programs:"Intel Programs",connectors:"Connectors",settings:"Settings"};
 function render(){
   if(!state.data)return;
   const cc=currentClient(); q("#pageTitle").textContent=(cc?cc.name+" · ":"")+(titles[state.view]||"Intelligence OS");
   qa(".nav").forEach(function(n){n.classList.toggle("active",n.dataset.view===state.view)});
-  const views={overview:overview,clients:clientsView,signals:signalsView,actions:actionsView,programs:programsView,connectors:connectorsView,settings:settingsView};
+  const views={overview:overview,clients:clientsView,signals:signalsView,opportunities:opportunitiesView,actions:actionsView,programs:programsView,connectors:connectorsView,settings:settingsView};
   q("#view").innerHTML=views[state.view]();
 }
 async function load(){
@@ -167,8 +193,25 @@ q("#refreshBtn").onclick=load;
 q("#newClientBtn").onclick=function(){window.newClient()};
 q("#modalClose").onclick=function(){q("#modal").classList.add("hidden")};
 q("#modal").onclick=function(e){if(e.target.id==="modal")q("#modal").classList.add("hidden")};
-function modal(html){q("#modalBody").innerHTML=html;q("#modal").classList.remove("hidden")}
+function modal(html){q("#modalClose").style.display="";q("#modalBody").innerHTML=html;q("#modal").classList.remove("hidden")}
 
+function showAdminLogin(){
+  modal('<h2 class="section-title">Lucid Logic Admin</h2><p class="section-sub">Sign in to the management console. Client users use the separate Client Portal.</p>'+
+  '<form id="adminLoginForm"><div class="field"><label>Admin access code</label><input id="adminCode" name="code" type="password" required autofocus></div><button class="btn gold" type="submit">Open Intelligence OS</button></form>'+
+  '<p class="muted" style="margin-top:16px">Client login: <a href="/portal">Open Client Portal</a></p>');
+  q("#modalClose").style.display="none";
+  setTimeout(function(){
+    q("#adminLoginForm").onsubmit=async function(e){
+      e.preventDefault();
+      try{
+        await api("/api/admin/login",{method:"POST",body:JSON.stringify({code:q("#adminCode").value})});
+        q("#modalClose").style.display="";
+        q("#modal").classList.add("hidden");
+        await load();
+      }catch(x){toast(x.message)}
+    };
+  },0);
+}
 function bindSettingsForm(){
   const form=q("#openaiSettingsForm");
   if(!form||form.dataset.bound==="1") return;
@@ -229,12 +272,41 @@ window.openClient=async function(id){
     }).join("")||'<div class="empty">No programs yet.</div>';
     const connectors=x.connectors.map(function(k){return '<span class="pill">'+esc(k.name)+'</span>'}).join(" ");
     const priorities=Array.isArray(p.priorities)?'<div class="code">• '+esc(p.priorities.join("\n• "))+'</div>':"";
+    const portalUsers=(x.portalUsers||[]).map(function(u){return '<div class="portal-user"><div><b>'+esc(u.name||u.email)+'</b><div class="muted">'+esc(u.email)+(u.last_login_at?' · last login '+ago(u.last_login_at):' · never logged in')+'</div></div><button class="btn small" onclick="portalUserForm('+c.id+',&quot;'+esc(u.email)+'&quot;,&quot;'+esc(u.name||"")+'&quot;)">Reset password</button></div>'}).join("")||'<div class="empty">No client portal users yet.</div>';
     modal('<h2 class="section-title">'+esc(c.name)+'</h2><p class="section-sub">'+esc(c.website_url||"")+' · '+esc(c.industry||"")+'</p>'+
     '<div class="split"><div><div class="panel"><h3>Intelligence mandate</h3><p>'+esc(c.objective||"Not defined yet.")+'</p><button class="btn gold" onclick="discover('+c.id+')">Analyze website + design intel</button></div>'+
     '<div class="panel"><div class="panel-head"><h3>Programs</h3><button class="btn small" onclick="programForm('+c.id+')">+ Add program</button></div>'+programs+'</div></div><div><div class="profile-box"><h3>WEBSITE-DERIVED PROFILE</h3><p>'+esc(p.summary||"Run Analyze website to create a business-specific source and action blueprint.")+'</p>'+priorities+'</div>'+
+    '<div class="panel"><div class="panel-head"><h3>Client Portal Access</h3><a class="btn small" href="/portal" target="_blank">Open portal ↗</a></div><p class="muted">Client users can only see this company. They never get the client selector or Lucid Logic configuration tools.</p>'+portalUsers+'<div class="actions"><button class="btn gold small" onclick="portalUserForm('+c.id+')">+ Add portal user</button></div></div>'+
     '<div class="panel"><h3>Connect action channel</h3><p class="muted">Website, social, webhook or delivery integration.</p><button class="btn" onclick="connectorForm('+c.id+')">+ Add connector</button><div style="margin-top:12px">'+connectors+'</div></div></div></div>');
   }catch(e){toast(e.message)}
 };
+window.setOpportunityStatus=async function(id,status){
+  try{
+    await api("/api/opportunities/"+id+"/status",{method:"POST",body:JSON.stringify({status:status})});
+    toast(status==="pursue"?"Marked for pursuit":status==="pass"?"Passed":"Moved to review");
+    await load();
+  }catch(e){toast(e.message)}
+};
+window.portalUserForm=function(clientId,email,name){
+  modal('<h2 class="section-title">'+(email?'Reset client portal login':'Add client portal user')+'</h2><p class="section-sub">This login is restricted to one client workspace.</p>'+
+  '<form id="portalUserForm"><div class="field"><label>Name</label><input name="name" value="'+esc(name||"")+'" placeholder="Client user"></div>'+
+  '<div class="field"><label>Email</label><input name="email" type="email" required value="'+esc(email||"")+'" '+(email?'readonly':'')+'></div>'+
+  '<div class="field"><label>'+(email?'New password':'Temporary password')+'</label><input name="password" type="password" minlength="8" required></div>'+
+  '<button class="btn gold" type="submit">'+(email?'Reset password':'Create portal login')+'</button></form>');
+  setTimeout(function(){
+    q("#portalUserForm").onsubmit=async function(e){
+      e.preventDefault();
+      const b=Object.fromEntries(new FormData(e.target));
+      try{
+        await api("/api/clients/"+clientId+"/portal-users",{method:"POST",body:JSON.stringify(b)});
+        toast(email?"Password reset":"Portal user created");
+        await load();
+        window.openClient(clientId);
+      }catch(x){toast(x.message)}
+    };
+  },0);
+};
+
 window.discover=async function(id){
   toast("Analyzing website...");
   try{await api("/api/clients/"+id+"/discover",{method:"POST",body:"{}"});toast("Blueprint created");window.openClient(id);load()}catch(e){toast(e.message)}
@@ -300,4 +372,7 @@ window.connectorForm=function(id){
     };
   },0);
 };
-load().catch(function(e){q("#view").innerHTML='<div class="empty">'+esc(e.message)+'</div>'});
+load().catch(function(e){
+  if(e.message==="admin_auth_required"){showAdminLogin();return}
+  q("#view").innerHTML='<div class="empty">'+esc(e.message)+'</div>';
+});
