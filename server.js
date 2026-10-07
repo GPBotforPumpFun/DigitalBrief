@@ -376,6 +376,9 @@ async function discover(client){
   await pool.query("update intel_clients set profile=$1 where id=$2",[JSON.stringify(blueprint),client.id]);
   return blueprint;
 }
+async function cleanupStaleRuns(){
+  await pool.query("update intel_runs set status='failed',summary=coalesce(nullif(summary,''),'Run was interrupted before completion. Please run it again.'),finished_at=now() where status='running' and created_at<now()-interval '10 minutes'");
+}
 async function runProgram(program,client,options={}){
   let runId=Number(options.runId||0);
   if(!runId){
@@ -551,6 +554,7 @@ app.post("/api/portal/actions/:id/approve",async function(req,reply){
 
 app.get("/health",async function(){return {ok:true,service:"Lucid Intelligence OS"}});
 app.get("/api/dashboard",async function(){
+  await cleanupStaleRuns();
   const all=await Promise.all([
     pool.query("select * from intel_clients order by name"),
     pool.query("select p.*,c.name client_name from intel_programs p join intel_clients c on c.id=p.client_id order by c.name,p.name"),
@@ -624,6 +628,7 @@ app.post("/api/programs",async function(req,reply){
 });
 
 app.get("/api/programs/:id",async function(req,reply){
+  await cleanupStaleRuns();
   const id=Number(req.params.id);
   const all=await Promise.all([
     pool.query("select p.*,c.name client_name from intel_programs p join intel_clients c on c.id=p.client_id where p.id=$1",[id]),
@@ -661,16 +666,30 @@ app.post("/api/briefs/send",async function(req,reply){
 
 app.post("/api/run",async function(req,reply){
   if(!RUN_SECRET || req.headers["x-run-secret"]!==RUN_SECRET) return reply.code(401).send({error:"unauthorized"});
+  await cleanupStaleRuns();
   const q=await pool.query("select p.*,c.name client_name,c.website_url,c.industry,c.geography,c.objective client_objective,c.profile from intel_programs p join intel_clients c on c.id=p.client_id where p.active=true and (p.last_run_at is null or (p.cadence='hourly' and p.last_run_at < now()-interval '55 minutes') or (p.cadence in ('daily','weekday') and p.last_run_at < current_date) or (p.cadence='weekly' and p.last_run_at < now()-interval '6 days') or (p.cadence='monthly' and p.last_run_at < now()-interval '27 days')) order by p.id");
-  const results=[],suppressUrgent=Boolean((req.body||{}).suppress_urgent);
+  const suppressUrgent=Boolean((req.body||{}).suppress_urgent);
+  const queued=[];
   for(const p of q.rows){
-    const c={id:p.client_id,name:p.client_name,website_url:p.website_url,industry:p.industry,geography:p.geography,objective:p.client_objective,profile:p.profile};
-    try{results.push({programId:p.id,result:await runProgram(p,c,{suppressUrgent:suppressUrgent})})}catch(e){results.push({programId:p.id,error:String(e.message||e)})}
+    const existing=await pool.query("select id from intel_runs where program_id=$1 and status='running' and created_at>now()-interval '10 minutes' order by created_at desc limit 1",[p.id]);
+    if(existing.rows[0]){queued.push({programId:p.id,runId:existing.rows[0].id,status:"already_running"});continue}
+    const rr=await pool.query("insert into intel_runs(program_id,client_id,run_meta) values($1,$2,$3) returning id",[p.id,p.client_id,JSON.stringify({source_plan:p.source_plan||[],action_plan:p.action_plan||[],cadence:p.cadence,model:AI_MODEL,program_type:p.program_type,scheduled:true})]);
+    queued.push({programId:p.id,runId:rr.rows[0].id,status:"queued",program:p});
   }
-  return {ran:results.length,results:results};
+  const work=queued.filter(x=>x.status==="queued");
+  setImmediate(async function(){
+    for(const item of work){
+      const p=item.program;
+      const c={id:p.client_id,name:p.client_name,website_url:p.website_url,industry:p.industry,geography:p.geography,objective:p.client_objective,profile:p.profile};
+      try{await runProgram(p,c,{runId:item.runId,suppressUrgent:suppressUrgent})}
+      catch(e){app.log.error({err:e,runId:item.runId,programId:p.id},"scheduled intelligence run failed")}
+    }
+  });
+  return reply.code(202).send({queued:work.length,alreadyRunning:queued.length-work.length,runs:queued.map(x=>({programId:x.programId,runId:x.runId,status:x.status}))});
 });
 
 app.get("/api/runs/:id",async function(req,reply){
+  await cleanupStaleRuns();
   const q=await pool.query("select r.*,p.name program_name from intel_runs r join intel_programs p on p.id=r.program_id where r.id=$1",[Number(req.params.id)]);
   if(!q.rows[0]) return reply.code(404).send({error:"Run not found"});
   return q.rows[0];
