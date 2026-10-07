@@ -45,7 +45,9 @@ const schema = [
 "create table if not exists intel_delivery_settings(client_id int primary key references intel_clients(id) on delete cascade,brief_enabled boolean not null default true,urgent_enabled boolean not null default true,updated_at timestamptz not null default now())",
 "create table if not exists intel_brief_deliveries(id serial primary key,client_id int not null references intel_clients(id) on delete cascade,user_id int not null references intel_client_users(id) on delete cascade,status text not null,provider_message_id text,error text,new_signal_count int not null default 0,open_action_count int not null default 0,open_opportunity_count int not null default 0,sent_at timestamptz not null default now())",
 "create table if not exists intel_alert_deliveries(id serial primary key,signal_id int not null references intel_signals(id) on delete cascade,user_id int not null references intel_client_users(id) on delete cascade,status text not null,provider_message_id text,error text,sent_at timestamptz not null default now(),unique(signal_id,user_id))",
-"create index if not exists ix_brief_deliveries_user_sent on intel_brief_deliveries(user_id,sent_at desc)"
+"create index if not exists ix_brief_deliveries_user_sent on intel_brief_deliveries(user_id,sent_at desc)",
+"alter table intel_client_users add column if not exists brief_recipient boolean not null default true",
+"alter table intel_client_users add column if not exists urgent_recipient boolean not null default true"
 ];
 
 function encrypt(obj){
@@ -237,7 +239,7 @@ function briefText(user,client,data){
 async function sendDailyBriefs(onlyClientId=null){
   const cfg=await getEmailConfig();
   if(!cfg.key||!cfg.from) return {sent:0,skipped:true,reason:"email_not_configured"};
-  const args=[],where=["u.active=true","c.status='active'"];
+  const args=[],where=["u.active=true","u.brief_recipient=true","c.status='active'"];
   if(onlyClientId){args.push(Number(onlyClientId));where.push("u.client_id=$"+args.length)}
   const q=await pool.query("select u.id,u.client_id,u.email,u.name,c.name client_name from intel_client_users u join intel_clients c on c.id=u.client_id left join intel_delivery_settings d on d.client_id=c.id where "+where.join(" and ")+" and coalesce(d.brief_enabled,true)=true order by u.client_id,u.id",args);
   const results=[];
@@ -264,7 +266,7 @@ async function sendUrgentAlertsForRun(runId,clientId){
   if(!ds.urgent_enabled) return {sent:0,skipped:true};
   const signals=await pool.query("select s.*,p.name program_name,p.program_type from intel_signals s join intel_programs p on p.id=s.program_id where s.run_id=$1 and s.client_id=$2 and s.client_visible=true and p.client_visible=true and s.importance>=3",[runId,clientId]);
   if(!signals.rows.length) return {sent:0};
-  const users=await pool.query("select u.id,u.client_id,u.email,u.name,c.name client_name from intel_client_users u join intel_clients c on c.id=u.client_id where u.client_id=$1 and u.active=true",[clientId]);
+  const users=await pool.query("select u.id,u.client_id,u.email,u.name,c.name client_name from intel_client_users u join intel_clients c on c.id=u.client_id where u.client_id=$1 and u.active=true and u.urgent_recipient=true",[clientId]);
   let sentCount=0;
   for(const sig of signals.rows){
     for(const user of users.rows){
@@ -580,7 +582,7 @@ app.get("/api/clients/:id",async function(req,reply){
     pool.query("select * from intel_actions where client_id=$1 order by created_at desc limit 120",[id]),
     pool.query("select id,client_id,connector_type,name,status,created_at from intel_connectors where client_id=$1 order by created_at",[id]),
     pool.query("select * from intel_opportunities where client_id=$1 order by coalesce(deadline,'2999-12-31') asc,created_at desc",[id]),
-    pool.query("select id,client_id,email,name,active,last_login_at,created_at from intel_client_users where client_id=$1 order by email",[id]),
+    pool.query("select id,client_id,email,name,active,brief_recipient,urgent_recipient,last_login_at,created_at from intel_client_users where client_id=$1 order by email",[id]),
     pool.query("select brief_enabled,urgent_enabled,updated_at from intel_delivery_settings where client_id=$1",[id]),
     pool.query("select status,sent_at,new_signal_count,open_action_count,open_opportunity_count,error from intel_brief_deliveries where client_id=$1 order by sent_at desc limit 8",[id])
   ]);
@@ -599,10 +601,17 @@ app.post("/api/clients/:id/portal-users",async function(req,reply){
   if(exists.rows[0]&&Number(exists.rows[0].client_id)!==clientId) return reply.code(409).send({error:"That email is already assigned to another client"});
   const passHash=hashPassword(password);
   let r;
-  if(exists.rows[0]) r=await pool.query("update intel_client_users set name=$1,password_hash=$2,active=true where id=$3 returning id,client_id,email,name,active,last_login_at,created_at",[name||null,passHash,exists.rows[0].id]);
-  else r=await pool.query("insert into intel_client_users(client_id,email,name,password_hash) values($1,$2,$3,$4) returning id,client_id,email,name,active,last_login_at,created_at",[clientId,email,name||null,passHash]);
+  if(exists.rows[0]) r=await pool.query("update intel_client_users set name=$1,password_hash=$2,active=true where id=$3 returning id,client_id,email,name,active,brief_recipient,urgent_recipient,last_login_at,created_at",[name||null,passHash,exists.rows[0].id]);
+  else r=await pool.query("insert into intel_client_users(client_id,email,name,password_hash) values($1,$2,$3,$4) returning id,client_id,email,name,active,brief_recipient,urgent_recipient,last_login_at,created_at",[clientId,email,name||null,passHash]);
   return r.rows[0];
 });
+app.patch("/api/clients/:clientId/portal-users/:userId/delivery",async function(req,reply){
+  const clientId=Number(req.params.clientId),userId=Number(req.params.userId),b=req.body||{};
+  const r=await pool.query("update intel_client_users set brief_recipient=$1,urgent_recipient=$2 where id=$3 and client_id=$4 returning id,email,name,active,brief_recipient,urgent_recipient",[b.brief_recipient!==false,b.urgent_recipient!==false,userId,clientId]);
+  if(!r.rows[0]) return reply.code(404).send({error:"Portal user not found"});
+  return r.rows[0];
+});
+
 app.patch("/api/clients/:id/delivery",async function(req,reply){
   const id=Number(req.params.id),b=req.body||{};
   const brief=b.brief_enabled!==false,urgent=b.urgent_enabled!==false;
@@ -703,10 +712,17 @@ app.post("/api/programs/:id/run",async function(req,reply){
   if(existing.rows[0]) return reply.code(202).send({runId:existing.rows[0].id,status:"running",alreadyRunning:true});
   const rr=await pool.query("insert into intel_runs(program_id,client_id,run_meta) values($1,$2,$3) returning id",[p.id,c.id,JSON.stringify({source_plan:p.source_plan||[],action_plan:p.action_plan||[],cadence:p.cadence,model:AI_MODEL,program_type:p.program_type,manual:true})]);
   const runId=rr.rows[0].id;
-  setImmediate(function(){
-    runProgram(p,c,{runId:runId}).catch(function(e){app.log.error({err:e,runId:runId,programId:p.id},"manual intelligence run failed")});
+  const sendBrief=Boolean((req.body||{}).send_brief);
+  setImmediate(async function(){
+    try{
+      await runProgram(p,c,{runId:runId});
+      if(sendBrief){
+        const delivery=await sendDailyBriefs(c.id);
+        await pool.query("update intel_runs set run_meta=run_meta||$1::jsonb where id=$2",[JSON.stringify({manual_email_delivery:delivery}),runId]);
+      }
+    }catch(e){app.log.error({err:e,runId:runId,programId:p.id},"manual intelligence run failed")}
   });
-  return reply.code(202).send({runId:runId,status:"running"});
+  return reply.code(202).send({runId:runId,status:"running",sendBrief:sendBrief});
 });
 app.post("/api/actions/generate",async function(req,reply){
   const b=req.body||{};
