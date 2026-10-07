@@ -1,6 +1,6 @@
 const q=s=>document.querySelector(s);
 const qa=s=>Array.from(document.querySelectorAll(s));
-const state={me:null,data:null,view:"overview"};
+const state={me:null,data:null,view:"overview",intelProgram:"all"};
 
 function esc(v){return String(v==null?"":v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 function nice(v){return String(v||"").replaceAll("_"," ").replace(/\b\w/g,c=>c.toUpperCase())}
@@ -29,12 +29,20 @@ function approvalLabel(type){
   return "Approve";
 }
 
+function intelligenceMeta(meta){
+  if(!meta||typeof meta!=="object") return "";
+  const preferred=["competitor","company","account","trigger","change_type","platform","metric","old_value","new_value","query","regulator","topic","effective_date","contact"];
+  const keys=preferred.filter(k=>meta[k]!==undefined&&meta[k]!==null&&String(meta[k]).trim()!=="").slice(0,6);
+  if(!keys.length) return "";
+  return '<div class="intel-meta">'+keys.map(k=>'<div><span>'+esc(nice(k))+'</span><b>'+esc(typeof meta[k]==="object"?JSON.stringify(meta[k]):meta[k])+'</b></div>').join("")+'</div>';
+}
 function signalCard(s){
   const importance=s.importance>=3?"priority":"standard";
   return '<article class="intel-item '+importance+'">'+
     '<div class="intel-rail"><span></span></div>'+
     '<div class="intel-body"><div class="row"><div><div class="intel-kicker">'+esc(s.program_name||"Intelligence")+'</div><h3>'+esc(s.title)+'</h3></div><span class="confidence">'+esc(s.confidence||70)+'% confidence</span></div>'+
     '<div class="intel-section"><span>WHAT CHANGED</span><p>'+esc(s.what_changed)+'</p></div>'+
+    intelligenceMeta(s.metadata)+
     '<div class="intel-section matter"><span>WHY IT MATTERS</span><p>'+esc(s.why_it_matters)+'</p></div>'+
     '<div class="intel-footer"><span>'+ago(s.created_at)+'</span>'+(s.source_url?'<a target="_blank" href="'+esc(s.source_url)+'">View source ↗</a>':'')+'</div></div></article>';
 }
@@ -72,12 +80,16 @@ function priorityRow(kind,title,sub,action,label){
   return '<button class="priority-row" onclick="'+action+'"><div class="priority-kind">'+esc(kind)+'</div><div class="priority-copy"><b>'+esc(title)+'</b><span>'+esc(sub)+'</span></div><div class="priority-go">'+esc(label)+' →</div></button>';
 }
 
+function hasOpportunityProgram(){
+  return state.data.programs.some(p=>p.program_type==="opportunity");
+}
 function overview(){
   const d=state.data;
-  const open=d.opportunities.filter(o=>o.pursuit_status!=="pass");
+  const hasOpp=hasOpportunityProgram();
+  const open=hasOpp?d.opportunities.filter(o=>o.pursuit_status!=="pass"):[];
   const pending=d.actions.filter(a=>a.status==="proposed");
   const newIntel=d.signals.filter(s=>Date.now()-new Date(s.created_at).getTime()<7*86400000);
-  const topOpp=open[0];
+  const topOpp=hasOpp?open[0]:null;
   const topAction=pending[0];
   const topIntel=d.signals[0];
   const priorities=[
@@ -85,10 +97,14 @@ function overview(){
     topAction?priorityRow("ACTION",topAction.title,actionInfo(topAction.action_type).desc,"go('actions')","Open"):null,
     topIntel?priorityRow("NEW INTELLIGENCE",topIntel.title,topIntel.why_it_matters,"go('intelligence')","Read"):null
   ].filter(Boolean).join("");
-  const programs=d.programs.map(p=>'<div class="watch-item"><div class="watch-dot"></div><div><b>'+esc(p.name)+'</b><span>'+esc(p.cadence)+' monitoring</span></div></div>').join("");
+  const programs=d.programs.map(p=>'<div class="watch-item"><div class="watch-dot"></div><div><b>'+esc(p.name)+'</b><span>'+esc(p.cadence)+' monitoring · '+esc(nice(p.program_type))+'</span></div></div>').join("");
+  const metrics=(hasOpp?metric("Open opportunities",open.length,"RFPs, grants and pursuits","accent"):"")+
+    metric("Needs your approval",pending.length,"Prepared actions waiting on you")+
+    metric("New intelligence",newIntel.length,"Material findings in the last 7 days")+
+    metric("Active monitors",d.programs.length,"Areas Lucid Logic is continuously watching");
 
   return '<div class="welcome"><div><p class="eyebrow">MANAGED FOR '+esc(state.me.client.name.toUpperCase())+'</p><h2>What needs your attention</h2><p>Lucid Logic is monitoring in the background. You only need to come here when something matters or a decision is needed.</p></div></div>'+
-  '<div class="metrics">'+metric("Open opportunities",open.length,"RFPs, grants and pursuits","accent")+metric("Needs your approval",pending.length,"Prepared actions waiting on you")+metric("New intelligence",newIntel.length,"Material findings in the last 7 days")+metric("Active monitors",d.programs.length,"Areas we are continuously watching")+'</div>'+
+  '<div class="metrics '+(hasOpp?"":"metrics-three")+'">'+metrics+'</div>'+
   '<div class="overview-grid"><div class="panel priority-panel"><div class="panel-head"><div><h2>Priority inbox</h2><p class="muted">The few things worth looking at now.</p></div></div>'+(priorities||'<div class="empty">Nothing needs your attention right now.</div>')+'</div>'+
   '<div class="panel watch-panel"><div class="panel-head"><div><h2>What we are watching</h2><p class="muted">You do not need to manage these. Lucid Logic does.</p></div></div>'+programs+'</div></div>';
 }
@@ -102,9 +118,16 @@ function opportunities(){
 }
 
 function intelligence(){
-  return '<div class="page-intro intel-intro"><div class="page-icon">◉</div><div><h2>Intelligence</h2><p>This is what Lucid Logic found and why it matters. It is the evidence and analysis behind the opportunities and actions elsewhere in the portal.</p></div></div>'+
-  '<div class="intel-feed">'+(state.data.signals.map(signalCard).join("")||'<div class="empty">No intelligence items yet.</div>')+'</div>';
+  const programs=state.data.programs.filter(p=>p.program_type!=="opportunity");
+  const allowedIds=new Set(programs.map(p=>String(p.id)));
+  let items=state.data.signals.filter(sig=>sig.program_type!=="opportunity"||allowedIds.has(String(sig.program_id)));
+  if(state.intelProgram!=="all") items=items.filter(sig=>String(sig.program_id)===String(state.intelProgram));
+  const tabs='<div class="intel-filters"><button class="intel-filter '+(state.intelProgram==="all"?"active":"")+'" onclick="setIntelProgram(\'all\')">All Intelligence <span>'+state.data.signals.filter(sig=>sig.program_type!=="opportunity").length+'</span></button>'+
+    programs.map(p=>'<button class="intel-filter '+(String(state.intelProgram)===String(p.id)?"active":"")+'" onclick="setIntelProgram(\''+p.id+'\')">'+esc(p.name)+' <span>'+state.data.signals.filter(sig=>String(sig.program_id)===String(p.id)).length+'</span></button>').join("")+'</div>';
+  return '<div class="page-intro intel-intro"><div class="page-icon">◉</div><div><h2>Intelligence</h2><p>This is what Lucid Logic found and why it matters. Filter by the intelligence program you care about, or view everything together.</p></div></div>'+
+  tabs+'<div class="intel-feed">'+(items.map(signalCard).join("")||'<div class="empty">No intelligence items in this view yet.</div>')+'</div>';
 }
+window.setIntelProgram=function(id){state.intelProgram=String(id);render()};
 
 function actions(){
   const pending=state.data.actions.filter(a=>a.status==="proposed");
@@ -118,7 +141,18 @@ function actions(){
 
 const titles={overview:"Overview",opportunities:"Opportunities",intelligence:"Intelligence",actions:"Action Center"};
 const views={overview,opportunities,intelligence,actions};
-function render(){q("#pageTitle").textContent=titles[state.view]||"Overview";qa(".nav").forEach(n=>n.classList.toggle("active",n.dataset.view===state.view));q("#view").innerHTML=views[state.view]()}
+function configureNavigation(){
+  const oppNav=q('.nav[data-view="opportunities"]');
+  const hasOpp=hasOpportunityProgram();
+  if(oppNav) oppNav.classList.toggle("hidden",!hasOpp);
+  if(!hasOpp&&state.view==="opportunities") state.view="overview";
+}
+function render(){
+  configureNavigation();
+  q("#pageTitle").textContent=titles[state.view]||"Overview";
+  qa(".nav").forEach(n=>n.classList.toggle("active",n.dataset.view===state.view));
+  q("#view").innerHTML=views[state.view]();
+}
 window.go=v=>{state.view=v;render()};
 qa(".nav").forEach(n=>n.onclick=()=>go(n.dataset.view));
 
