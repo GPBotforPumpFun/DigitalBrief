@@ -231,20 +231,49 @@ function showAdminLogin(){
 }
 function bindSettingsForm(){
   const form=q("#openaiSettingsForm");
-  if(!form||form.dataset.bound==="1") return;
-  form.dataset.bound="1";
-  form.onsubmit=async function(e){
-    e.preventDefault();
-    const code=q("#settingsCode").value.trim();
-    const key=q("#openaiKey").value.trim();
-    if(!code||!key){toast("Enter the settings code and OpenAI key");return}
-    try{
-      const r=await api("/api/settings/openai",{method:"POST",headers:{"X-Settings-Code":code},body:JSON.stringify({api_key:key})});
-      localStorage.setItem("intelSettingsCode",code);
-      toast("OpenAI key verified and saved");
-      await load();
-    }catch(x){toast(x.message)}
-  };
+  if(form&&form.dataset.bound!=="1"){
+    form.dataset.bound="1";
+    form.onsubmit=async function(e){
+      e.preventDefault();
+      const code=q("#settingsCode").value.trim(),key=q("#openaiKey").value.trim();
+      if(!code||!key){toast("Enter the settings code and OpenAI key");return}
+      try{
+        await api("/api/settings/openai",{method:"POST",headers:{"X-Settings-Code":code},body:JSON.stringify({api_key:key})});
+        localStorage.setItem("intelSettingsCode",code);
+        toast("OpenAI key verified and saved");
+        await load();
+      }catch(x){toast(x.message)}
+    };
+  }
+  const emailForm=q("#emailSettingsForm");
+  if(emailForm&&emailForm.dataset.bound!=="1"){
+    emailForm.dataset.bound="1";
+    emailForm.onsubmit=async function(e){
+      e.preventDefault();
+      const code=q("#emailSettingsCode").value.trim(),key=q("#resendKey").value.trim(),from=q("#emailFrom").value.trim();
+      if(!code||!key||!from){toast("Enter the settings code, email key and From address");return}
+      try{
+        await api("/api/settings/email",{method:"POST",headers:{"X-Settings-Code":code},body:JSON.stringify({api_key:key,from:from})});
+        localStorage.setItem("intelSettingsCode",code);
+        toast("Email delivery verified and saved");
+        await load();
+      }catch(x){toast(x.message)}
+    };
+  }
+  const testForm=q("#testEmailForm");
+  if(testForm&&testForm.dataset.bound!=="1"){
+    testForm.dataset.bound="1";
+    testForm.onsubmit=async function(e){
+      e.preventDefault();
+      const code=(q("#emailSettingsCode")?q("#emailSettingsCode").value.trim():"")||localStorage.getItem("intelSettingsCode")||"";
+      const to=q("#testEmailTo").value.trim();
+      if(!code||!to){toast("Enter the settings code and test email");return}
+      try{
+        await api("/api/settings/email/test",{method:"POST",headers:{"X-Settings-Code":code},body:JSON.stringify({to:to})});
+        toast("Test email sent");
+      }catch(x){toast(x.message)}
+    };
+  }
 }
 window.clearOpenAIKey=async function(){
   const code=(q("#settingsCode")?q("#settingsCode").value:"")||localStorage.getItem("intelSettingsCode")||"";
