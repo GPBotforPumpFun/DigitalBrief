@@ -140,7 +140,7 @@ function settingsView(){
 const titles={overview:"Command Center",clients:"Clients",signals:"Signal Feed",actions:"Action Queue",programs:"Intel Programs",connectors:"Connectors",settings:"Settings"};
 function render(){
   if(!state.data)return;
-  q("#pageTitle").textContent=titles[state.view]||"Intelligence OS";
+  const cc=currentClient(); q("#pageTitle").textContent=(cc?cc.name+" · ":"")+(titles[state.view]||"Intelligence OS");
   qa(".nav").forEach(function(n){n.classList.toggle("active",n.dataset.view===state.view)});
   const views={overview:overview,clients:clientsView,signals:signalsView,actions:actionsView,programs:programsView,connectors:connectorsView,settings:settingsView};
   q("#view").innerHTML=views[state.view]();
