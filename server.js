@@ -11,11 +11,12 @@ const dir = path.dirname(fileURLToPath(import.meta.url));
 await app.register(staticPlugin, { root: path.join(dir, "public"), prefix: "/" });
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
-const AI_KEY = process.env.OPENAI_API_KEY || "";
+const ENV_AI_KEY = process.env.OPENAI_API_KEY || "";
 const AI_MODEL = process.env.OPENAI_MODEL || "gpt-5.6";
 const CRYPT_KEY = crypto.createHash("sha256").update(process.env.CONNECTOR_ENCRYPTION_KEY || process.env.RUN_SECRET || "lucid-intel-dev").digest();
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
 const RUN_SECRET = process.env.RUN_SECRET || "";
+const SETTINGS_CODE = process.env.SETTINGS_CODE || "";
 
 const schema = [
 "create table if not exists intel_clients(id serial primary key,name text not null,website_url text,industry text,geography text,objective text,status text not null default 'active',profile jsonb not null default '{}'::jsonb,created_at timestamptz not null default now())",
@@ -23,7 +24,8 @@ const schema = [
 "create table if not exists intel_runs(id serial primary key,program_id int not null references intel_programs(id) on delete cascade,client_id int not null references intel_clients(id) on delete cascade,status text not null default 'running',summary text,created_at timestamptz not null default now(),finished_at timestamptz)",
 "create table if not exists intel_signals(id serial primary key,run_id int references intel_runs(id) on delete cascade,program_id int not null references intel_programs(id) on delete cascade,client_id int not null references intel_clients(id) on delete cascade,title text not null,what_changed text not null,why_it_matters text not null,source_name text,source_url text,signal_date date,importance int not null default 2,confidence int not null default 70,created_at timestamptz not null default now())",
 "create table if not exists intel_actions(id serial primary key,signal_id int references intel_signals(id) on delete cascade,client_id int not null references intel_clients(id) on delete cascade,program_id int references intel_programs(id) on delete set null,action_type text not null,title text not null,rationale text,payload jsonb not null default '{}'::jsonb,status text not null default 'proposed',created_at timestamptz not null default now(),executed_at timestamptz)",
-"create table if not exists intel_connectors(id serial primary key,client_id int not null references intel_clients(id) on delete cascade,connector_type text not null,name text not null,encrypted_config text,status text not null default 'configured',created_at timestamptz not null default now())"
+"create table if not exists intel_connectors(id serial primary key,client_id int not null references intel_clients(id) on delete cascade,connector_type text not null,name text not null,encrypted_config text,status text not null default 'configured',created_at timestamptz not null default now())",
+"create table if not exists intel_settings(setting_key text primary key,encrypted_value text,updated_at timestamptz not null default now())"
 ];
 
 function encrypt(obj){
@@ -73,10 +75,27 @@ function parseJson(text){
   if(a>=0&&b>a){try{return JSON.parse(s.slice(a,b+1))}catch{}}
   return null;
 }
+async function getSetting(key){
+  const r=await pool.query("select encrypted_value from intel_settings where setting_key=$1",[key]);
+  if(!r.rows[0]||!r.rows[0].encrypted_value) return "";
+  try{
+    const v=decrypt(r.rows[0].encrypted_value);
+    return v&&v.value?String(v.value):"";
+  }catch{return ""}
+}
+async function setSetting(key,value){
+  await pool.query("insert into intel_settings(setting_key,encrypted_value,updated_at) values($1,$2,now()) on conflict(setting_key) do update set encrypted_value=excluded.encrypted_value,updated_at=now()",[key,encrypt({value:value})]);
+}
+async function getAIKey(){
+  const dbKey=await getSetting("openai_api_key");
+  return dbKey||ENV_AI_KEY;
+}
+async function hasAIKey(){return Boolean(await getAIKey())}
 async function openai(prompt,useWeb){
-  if(!AI_KEY) return null;
+  const key=await getAIKey();
+  if(!key) return null;
   const body={model:AI_MODEL,input:prompt,tools:useWeb?[{type:"web_search"}]:[]};
-  const r=await fetch("https://api.openai.com/v1/responses",{method:"POST",headers:{Authorization:"Bearer "+AI_KEY,"Content-Type":"application/json"},body:JSON.stringify(body)});
+  const r=await fetch("https://api.openai.com/v1/responses",{method:"POST",headers:{Authorization:"Bearer "+key,"Content-Type":"application/json"},body:JSON.stringify(body)});
   if(!r.ok) throw new Error("OpenAI "+r.status+": "+(await r.text()).slice(0,300));
   const d=await r.json();
   if(d.output_text) return d.output_text;
@@ -135,7 +154,7 @@ async function discover(client){
       {type:"outreach",label:"Draft account outreach"}
     ]
   };
-  if(AI_KEY){
+  if(await hasAIKey()){
     const prompt="Design a managed intelligence program for a paying business client. Promise: monitor information they cannot afford to miss, filter noise, explain why changes matter, and turn changes into business actions.\nClient: "+client.name+"\nIndustry: "+(client.industry||"")+"\nGeography: "+(client.geography||"")+"\nObjective: "+(client.objective||"")+"\nWebsite title: "+site.title+"\nDescription: "+site.description+"\nSite text: "+site.text.slice(0,12000)+"\nReturn ONLY JSON with summary, business_model, priorities[], competitor_queries[], opportunity_queries[], industry_queries[], account_trigger_queries[], suggested_sources[{label,value,kind}], suggested_programs[{name,type,objective,cadence,sources[],actions[]}], suggested_actions[{type,label,reason}]. Make it specific.";
     const out=parseJson(await openai(prompt,false));
     if(out) blueprint=Object.assign(blueprint,out);
@@ -211,7 +230,7 @@ app.get("/api/dashboard",async function(){
     pool.query("select a.*,c.name client_name,s.title signal_title from intel_actions a join intel_clients c on c.id=a.client_id left join intel_signals s on s.id=a.signal_id order by a.created_at desc limit 80"),
     pool.query("select r.*,p.name program_name,c.name client_name from intel_runs r join intel_programs p on p.id=r.program_id join intel_clients c on c.id=r.client_id order by r.created_at desc limit 30")
   ]);
-  return {clients:all[0].rows,programs:all[1].rows,signals:all[2].rows,actions:all[3].rows,runs:all[4].rows,aiConfigured:Boolean(AI_KEY)};
+  return {clients:all[0].rows,programs:all[1].rows,signals:all[2].rows,actions:all[3].rows,runs:all[4].rows,aiConfigured:await hasAIKey()};
 });
 app.post("/api/clients",async function(req,reply){
   const b=req.body||{};
@@ -267,7 +286,7 @@ app.post("/api/actions/generate",async function(req,reply){
   if(!s) return reply.code(404).send({error:"Signal not found"});
   const type=b.action_type||"social_post";
   let payload={title:s.title,body:s.what_changed+"\n\nWhy it matters: "+s.why_it_matters,notes:"Connect OpenAI for tailored generation."};
-  if(AI_KEY){
+  if(await hasAIKey()){
     const prompt="Create a ready-to-use "+type+" for "+s.client_name+" from this signal. Title: "+s.title+". What changed: "+s.what_changed+". Why it matters: "+s.why_it_matters+". Source: "+(s.source_url||"")+". Return only JSON with title, body and notes.";
     const out=parseJson(await openai(prompt,false));
     if(out) payload=out;
@@ -288,6 +307,30 @@ app.post("/api/actions/:id/dismiss",async function(req){
   await pool.query("update intel_actions set status='dismissed' where id=$1",[Number(req.params.id)]);
   return {ok:true};
 });
+app.get("/api/settings/status",async function(){
+  const key=await getAIKey();
+  return {aiConfigured:Boolean(key),source:(await getSetting("openai_api_key"))?"dashboard":(ENV_AI_KEY?"environment":"none"),masked:key?("••••"+key.slice(-4)):""};
+});
+app.post("/api/settings/openai",async function(req,reply){
+  if(!SETTINGS_CODE) return reply.code(503).send({error:"Settings access code is not configured"});
+  if(req.headers["x-settings-code"]!==SETTINGS_CODE) return reply.code(401).send({error:"Invalid settings code"});
+  const b=req.body||{};
+  const key=String(b.api_key||"").trim();
+  if(!/^sk-[A-Za-z0-9_-]{20,}$/.test(key)) return reply.code(400).send({error:"That does not look like a valid OpenAI API key"});
+  try{
+    const r=await fetch("https://api.openai.com/v1/models",{headers:{Authorization:"Bearer "+key}});
+    if(!r.ok) return reply.code(400).send({error:"OpenAI rejected that API key"});
+  }catch(e){return reply.code(502).send({error:"Could not verify the OpenAI API key"})}
+  await setSetting("openai_api_key",key);
+  return {ok:true,masked:"••••"+key.slice(-4)};
+});
+app.delete("/api/settings/openai",async function(req,reply){
+  if(!SETTINGS_CODE) return reply.code(503).send({error:"Settings access code is not configured"});
+  if(req.headers["x-settings-code"]!==SETTINGS_CODE) return reply.code(401).send({error:"Invalid settings code"});
+  await pool.query("delete from intel_settings where setting_key='openai_api_key'");
+  return {ok:true,aiConfigured:Boolean(ENV_AI_KEY)};
+});
+
 app.post("/api/connectors",async function(req,reply){
   const b=req.body||{};
   if(!b.client_id||!b.connector_type||!b.name) return reply.code(400).send({error:"client_id, connector_type and name required"});
