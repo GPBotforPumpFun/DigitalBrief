@@ -335,6 +335,24 @@ window.openClient=async function(id){
     '<div class="panel"><h3>Connect action channel</h3><p class="muted">Website, social, webhook or delivery integration.</p><button class="btn" onclick="connectorForm('+c.id+')">+ Add connector</button><div style="margin-top:12px">'+connectors+'</div></div></div></div>');
   }catch(e){toast(e.message)}
 };
+window.saveDelivery=async function(clientId){
+  const brief=q("#briefEnabled-"+clientId),urgent=q("#urgentEnabled-"+clientId);
+  try{
+    await api("/api/clients/"+clientId+"/delivery",{method:"PATCH",body:JSON.stringify({brief_enabled:brief?brief.checked:true,urgent_enabled:urgent?urgent.checked:true})});
+    toast("Delivery settings saved");
+    window.openClient(clientId);
+  }catch(e){toast(e.message)}
+};
+window.sendClientBrief=async function(clientId){
+  toast("Sending brief...");
+  try{
+    const r=await api("/api/clients/"+clientId+"/send-brief",{method:"POST",body:"{}"});
+    if(r.skipped){toast("Email delivery is not configured in Settings");return}
+    toast(r.sent+" brief"+(r.sent===1?"":"s")+" sent"+(r.failed?" · "+r.failed+" failed":""));
+    window.openClient(clientId);
+  }catch(e){toast(e.message)}
+};
+
 window.setOpportunityStatus=async function(id,status){
   try{
     await api("/api/opportunities/"+id+"/status",{method:"POST",body:JSON.stringify({status:status})});
