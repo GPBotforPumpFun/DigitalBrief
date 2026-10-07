@@ -1,6 +1,6 @@
 const q=function(s){return document.querySelector(s)};
 const qa=function(s){return Array.from(document.querySelectorAll(s))};
-const state={data:null,view:"overview"};
+const state={data:null,view:"overview",clientId:localStorage.getItem("intelClientId")||"all",settings:null};
 
 function esc(v){return String(v==null?"":v).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})}
 function nice(v){return String(v||"").replaceAll("_"," ").replace(/\b\w/g,function(c){return c.toUpperCase()})}
@@ -23,6 +23,22 @@ async function api(url,opts){
   const d=await r.json().catch(function(){return {}});
   if(!r.ok)throw new Error(d.error||("Request failed "+r.status));
   return d;
+}
+function scoped(arr){
+  if(state.clientId==="all") return arr||[];
+  return (arr||[]).filter(function(x){return String(x.client_id)===String(state.clientId)});
+}
+function currentClient(){
+  if(!state.data||state.clientId==="all") return null;
+  return state.data.clients.find(function(c){return String(c.id)===String(state.clientId)})||null;
+}
+function syncClientSelect(){
+  const sel=q("#clientSelect");
+  if(!sel||!state.data) return;
+  const exists=state.data.clients.some(function(c){return String(c.id)===String(state.clientId)});
+  if(state.clientId!=="all"&&!exists) state.clientId="all";
+  sel.innerHTML='<option value="all">All Clients</option>'+state.data.clients.map(function(c){return '<option value="'+c.id+'">'+esc(c.name)+'</option>'}).join("");
+  sel.value=String(state.clientId);
 }
 function metric(label,value,sub){
   return '<div class="metric"><div class="label">'+esc(label)+'</div><div class="value">'+esc(value)+'</div><div class="sub">'+esc(sub)+'</div></div>';
@@ -57,17 +73,19 @@ function actionCard(a){
 }
 function overview(){
   const d=state.data;
-  const pending=d.actions.filter(function(a){return a.status==="proposed"}).length;
-  const hi=d.signals.filter(function(s){return s.importance>=3}).length;
+  const programs=scoped(d.programs),signals=scoped(d.signals),actions=scoped(d.actions);
+  const pending=actions.filter(function(a){return a.status==="proposed"}).length;
+  const hi=signals.filter(function(x){return x.importance>=3}).length;
+  const client=currentClient();
   return '<div class="metrics">'+
-  metric("Active clients",d.clients.length,"Managed in one operating system")+
-  metric("Live intel programs",d.programs.filter(function(p){return p.active}).length,"Revenue, market, visibility and account watches")+
+  metric(client?"Client workspace":"Active clients",client?client.name:d.clients.length,client?"Scoped dashboard":"Managed in one operating system")+
+  metric("Live intel programs",programs.filter(function(p){return p.active}).length,"Revenue, market, visibility and account watches")+
   metric("Actions waiting",pending,"Human approval before execution")+
   metric("High-priority signals",hi,"Material items requiring attention")+'</div>'+
   '<div class="grid"><div><div class="panel"><div class="panel-head"><h2>Latest material signals</h2><button class="btn small" onclick="go(&quot;signals&quot;)">View all</button></div>'+
-  (d.signals.length?d.signals.slice(0,6).map(signalCard).join(""):'<div class="empty">No signals yet.</div>')+
+  (signals.length?signals.slice(0,6).map(signalCard).join(""):'<div class="empty">No signals yet for this client.</div>')+
   '</div></div><div><div class="panel"><div class="panel-head"><h2>Action queue</h2><button class="btn small" onclick="go(&quot;actions&quot;)">Open queue</button></div>'+
-  (d.actions.filter(function(a){return a.status==="proposed"}).slice(0,5).map(actionCard).join("")||'<div class="empty">Nothing waiting for approval.</div>')+
+  (actions.filter(function(a){return a.status==="proposed"}).slice(0,5).map(actionCard).join("")||'<div class="empty">Nothing waiting for approval.</div>')+
   '</div><div class="profile-box"><h3>THE VALUE LOOP</h3><p><b>Watch → Understand → Decide → Act → Measure.</b><br><br>The brief is evidence. The product is the managed action layer that turns external change into something the client can actually do.</p></div></div></div>';
 }
 function clientsView(){
@@ -78,19 +96,20 @@ function clientsView(){
   return '<div class="panel"><div class="panel-head"><div><h2>Managed clients</h2><div class="muted">Each client gets its own sources, cadence, action rules and connectors.</div></div><button class="btn gold" onclick="newClient()">+ Add client</button></div><div class="client-grid">'+cards+'</div></div>';
 }
 function signalsView(){
-  return '<div class="panel"><div class="panel-head"><div><h2>Signal feed</h2><div class="muted">Only material changes, with business impact and action options attached.</div></div></div>'+
-  (state.data.signals.map(signalCard).join("")||'<div class="empty">No signals yet.</div>')+'</div>';
+  const items=scoped(state.data.signals);
+  return '<div class="panel"><div class="panel-head"><div><h2>Signal feed</h2><div class="muted">Only material changes for '+esc(currentClient()?currentClient().name:"all managed clients")+', with business impact and action options attached.</div></div></div>'+
+  (items.map(signalCard).join("")||'<div class="empty">No signals yet for this client.</div>')+'</div>';
 }
 function actionsView(){
   const groups=["proposed","approved","executed","dismissed"];
   return '<div class="panel"><div class="panel-head"><div><h2>Action queue</h2><div class="muted">The system recommends. Lucid Logic or the client approves. Connected systems execute.</div></div></div>'+
   groups.map(function(g){
-    const html=state.data.actions.filter(function(a){return a.status===g}).map(actionCard).join("");
+    const html=scoped(state.data.actions).filter(function(a){return a.status===g}).map(actionCard).join("");
     return '<h3 style="margin-top:22px">'+nice(g)+'</h3>'+(html||'<div class="empty">None</div>');
   }).join("")+'</div>';
 }
 function programsView(){
-  const html=state.data.programs.map(function(p){
+  const html=scoped(state.data.programs).map(function(p){
     return '<div class="program"><div class="type">'+esc(p.program_type)+' · '+esc(p.cadence)+'</div><h3>'+esc(p.name)+'</h3><p>'+esc(p.objective)+'</p>'+
     '<div class="meta">Client: '+esc(p.client_name)+' · Last run: '+ago(p.last_run_at)+'</div><div class="actions"><button class="btn gold small" onclick="runProgram('+p.id+')">Run now</button></div></div>';
   }).join("");
@@ -106,27 +125,76 @@ function connectorsView(){
   '<div class="connector"><h3>Proposal / RFP workflow</h3><p class="muted">Qualified opportunities can spawn a proposal starter, compliance checklist, questions, due-date plan and pursuit decision.</p></div>'+
   '<div class="connector"><h3>CRM / webhook</h3><p class="muted">Account triggers can become CRM tasks, Slack alerts or sales follow-ups.</p></div></div></div></div>';
 }
-const titles={overview:"Command Center",clients:"Clients",signals:"Signal Feed",actions:"Action Queue",programs:"Intel Programs",connectors:"Connectors"};
+function settingsView(){
+  const st=state.settings||{};
+  const savedCode=localStorage.getItem("intelSettingsCode")||"";
+  return '<div class="panel"><div class="panel-head"><div><h2>System Settings</h2><div class="muted">Platform-level configuration. Client data remains separated by workspace.</div></div></div>'+
+  '<div class="split"><div><div class="connector"><h3>OpenAI research engine</h3><p class="muted">Status: <b>'+(st.aiConfigured?'Connected':'Not connected')+'</b>'+(st.masked?' · '+esc(st.masked):'')+'</p>'+
+  '<p class="muted">The API key is encrypted before it is stored and is never displayed again.</p>'+
+  '<form id="openaiSettingsForm"><div class="field"><label>Settings access code</label><input id="settingsCode" type="password" value="'+esc(savedCode)+'" autocomplete="current-password"></div>'+
+  '<div class="field"><label>OpenAI API key</label><input id="openaiKey" type="password" placeholder="sk-..." autocomplete="off"></div>'+
+  '<div class="actions"><button class="btn gold" type="submit">Save + Verify Key</button>'+(st.source==="dashboard"?'<button class="btn danger" type="button" onclick="clearOpenAIKey()">Remove saved key</button>':'')+'</div></form></div></div>'+
+  '<div><div class="profile-box"><h3>CLIENT SEPARATION</h3><p>The selector in the top bar now defines the active client workspace. Signals, actions, programs and Command Center metrics are scoped to that client. Choose <b>All Clients</b> only when you intentionally want the Lucid Logic master view.</p></div>'+
+  '<div class="connector"><h3>Research model</h3><p class="muted">'+esc("Current model: "+(st.model||"GPT-5.6"))+'</p></div></div></div></div>';
+}
+const titles={overview:"Command Center",clients:"Clients",signals:"Signal Feed",actions:"Action Queue",programs:"Intel Programs",connectors:"Connectors",settings:"Settings"};
 function render(){
   if(!state.data)return;
   q("#pageTitle").textContent=titles[state.view]||"Intelligence OS";
   qa(".nav").forEach(function(n){n.classList.toggle("active",n.dataset.view===state.view)});
-  const views={overview:overview,clients:clientsView,signals:signalsView,actions:actionsView,programs:programsView,connectors:connectorsView};
+  const views={overview:overview,clients:clientsView,signals:signalsView,actions:actionsView,programs:programsView,connectors:connectorsView,settings:settingsView};
   q("#view").innerHTML=views[state.view]();
 }
 async function load(){
-  state.data=await api("/api/dashboard");
+  const all=await Promise.all([api("/api/dashboard"),api("/api/settings/status")]);
+  state.data=all[0];
+  state.settings=Object.assign({model:"GPT-5.6"},all[1]);
   q("#aiBadge").textContent=state.data.aiConfigured?"Live research connected":"AI key not connected";
   q("#aiBadge").className="badge "+(state.data.aiConfigured?"ok":"");
+  syncClientSelect();
   render();
+  bindSettingsForm();
 }
-window.go=function(v){state.view=v;render()};
+window.go=function(v){state.view=v;render();bindSettingsForm()};
+q("#clientSelect").onchange=function(){
+  state.clientId=this.value;
+  localStorage.setItem("intelClientId",state.clientId);
+  render();
+  bindSettingsForm();
+};
 qa(".nav").forEach(function(n){n.onclick=function(){state.view=n.dataset.view;render()}});
 q("#refreshBtn").onclick=load;
 q("#newClientBtn").onclick=function(){window.newClient()};
 q("#modalClose").onclick=function(){q("#modal").classList.add("hidden")};
 q("#modal").onclick=function(e){if(e.target.id==="modal")q("#modal").classList.add("hidden")};
 function modal(html){q("#modalBody").innerHTML=html;q("#modal").classList.remove("hidden")}
+
+function bindSettingsForm(){
+  const form=q("#openaiSettingsForm");
+  if(!form||form.dataset.bound==="1") return;
+  form.dataset.bound="1";
+  form.onsubmit=async function(e){
+    e.preventDefault();
+    const code=q("#settingsCode").value.trim();
+    const key=q("#openaiKey").value.trim();
+    if(!code||!key){toast("Enter the settings code and OpenAI key");return}
+    try{
+      const r=await api("/api/settings/openai",{method:"POST",headers:{"X-Settings-Code":code},body:JSON.stringify({api_key:key})});
+      localStorage.setItem("intelSettingsCode",code);
+      toast("OpenAI key verified and saved");
+      await load();
+    }catch(x){toast(x.message)}
+  };
+}
+window.clearOpenAIKey=async function(){
+  const code=(q("#settingsCode")?q("#settingsCode").value:"")||localStorage.getItem("intelSettingsCode")||"";
+  if(!code){toast("Enter the settings access code");return}
+  try{
+    await api("/api/settings/openai",{method:"DELETE",headers:{"X-Settings-Code":code},body:"{}"});
+    toast("Saved OpenAI key removed");
+    await load();
+  }catch(x){toast(x.message)}
+};
 
 window.newClient=function(){
   modal('<h2 class="section-title">Add managed intelligence client</h2><p class="section-sub">Start with a URL. The platform can learn the business and suggest the intelligence program.</p>'+
@@ -149,6 +217,10 @@ window.newClient=function(){
   },0);
 };
 window.openClient=async function(id){
+  state.clientId=String(id);
+  localStorage.setItem("intelClientId",state.clientId);
+  syncClientSelect();
+  render();
   try{
     const x=await api("/api/clients/"+id);
     const c=x.client,p=c.profile||{};
@@ -171,7 +243,7 @@ window.runProgram=async function(id){
   toast("Research run started...");
   try{
     const r=await api("/api/programs/"+id+"/run",{method:"POST",body:"{}"});
-    toast(r.status==="needs_configuration"?"Add OPENAI_API_KEY for live research":"Research complete");
+    toast(r.status==="needs_configuration"?"Add your OpenAI key in Settings for live research":"Research complete");
     await load();
   }catch(e){toast(e.message)}
 };
