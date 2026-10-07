@@ -187,6 +187,7 @@ function render(){
   qa(".nav").forEach(function(n){n.classList.toggle("active",n.dataset.view===state.view)});
   const views={overview:overview,clients:clientsView,signals:signalsView,opportunities:opportunitiesView,actions:actionsView,programs:programsView,connectors:connectorsView,settings:settingsView};
   q("#view").innerHTML=views[state.view]();
+  if(state.view==="settings") setTimeout(bindSettingsForm,0);
 }
 async function load(){
   const all=await Promise.all([api("/api/dashboard"),api("/api/settings/status")]);
@@ -205,7 +206,7 @@ q("#clientSelect").onchange=function(){
   render();
   bindSettingsForm();
 };
-qa(".nav").forEach(function(n){n.onclick=function(){state.view=n.dataset.view;render()}});
+qa(".nav").forEach(function(n){n.onclick=function(){window.go(n.dataset.view)}});
 q("#refreshBtn").onclick=load;
 q("#newClientBtn").onclick=function(){window.newClient()};
 q("#modalClose").onclick=function(){q("#modal").classList.add("hidden")};
