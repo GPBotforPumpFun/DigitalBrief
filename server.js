@@ -25,7 +25,12 @@ const schema = [
 "create table if not exists intel_signals(id serial primary key,run_id int references intel_runs(id) on delete cascade,program_id int not null references intel_programs(id) on delete cascade,client_id int not null references intel_clients(id) on delete cascade,title text not null,what_changed text not null,why_it_matters text not null,source_name text,source_url text,signal_date date,importance int not null default 2,confidence int not null default 70,created_at timestamptz not null default now())",
 "create table if not exists intel_actions(id serial primary key,signal_id int references intel_signals(id) on delete cascade,client_id int not null references intel_clients(id) on delete cascade,program_id int references intel_programs(id) on delete set null,action_type text not null,title text not null,rationale text,payload jsonb not null default '{}'::jsonb,status text not null default 'proposed',created_at timestamptz not null default now(),executed_at timestamptz)",
 "create table if not exists intel_connectors(id serial primary key,client_id int not null references intel_clients(id) on delete cascade,connector_type text not null,name text not null,encrypted_config text,status text not null default 'configured',created_at timestamptz not null default now())",
-"create table if not exists intel_settings(setting_key text primary key,encrypted_value text,updated_at timestamptz not null default now())"
+"create table if not exists intel_settings(setting_key text primary key,encrypted_value text,updated_at timestamptz not null default now())",
+"create table if not exists intel_opportunities(id serial primary key,signal_id int unique references intel_signals(id) on delete set null,client_id int not null references intel_clients(id) on delete cascade,program_id int references intel_programs(id) on delete set null,title text not null,summary text,source_name text,source_url text,document_url text,opportunity_type text not null default 'rfp',fit_score int not null default 0,recommendation text,pursuit_status text not null default 'review',deadline date,qa_deadline date,estimated_value text,geography text,requirements jsonb not null default '[]'::jsonb,created_at timestamptz not null default now(),updated_at timestamptz not null default now())",
+"create table if not exists intel_client_users(id serial primary key,client_id int not null references intel_clients(id) on delete cascade,email text not null unique,name text,password_hash text not null,active boolean not null default true,last_login_at timestamptz,created_at timestamptz not null default now())",
+"create table if not exists intel_client_sessions(id serial primary key,user_id int not null references intel_client_users(id) on delete cascade,token_hash text not null unique,expires_at timestamptz not null,created_at timestamptz not null default now())",
+"create index if not exists ix_opportunities_client_status on intel_opportunities(client_id,pursuit_status)",
+"create index if not exists ix_client_sessions_expiry on intel_client_sessions(expires_at)"
 ];
 
 function encrypt(obj){
@@ -41,22 +46,61 @@ function decrypt(value){
   d.setAuthTag(tag);
   return JSON.parse(Buffer.concat([d.update(data),d.final()]).toString("utf8"));
 }
+function cookieValue(req,name){
+  const raw=req.headers.cookie||"";
+  for(const part of raw.split(";")){
+    const i=part.indexOf("=");
+    if(i<0) continue;
+    if(part.slice(0,i).trim()===name) return decodeURIComponent(part.slice(i+1).trim());
+  }
+  return "";
+}
+function setHttpCookie(reply,name,value,maxAge){
+  reply.header("Set-Cookie",name+"="+encodeURIComponent(value)+"; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age="+maxAge);
+}
+function clearHttpCookie(reply,name){
+  reply.header("Set-Cookie",name+"=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0");
+}
+function adminToken(){
+  return crypto.createHmac("sha256",RUN_SECRET||SETTINGS_CODE||"lucid-admin").update("lucid-admin:"+SETTINGS_CODE).digest("hex");
+}
+function isAdmin(req){
+  if(!SETTINGS_CODE) return true;
+  const a=cookieValue(req,"intel_admin");
+  const b=adminToken();
+  if(!a||a.length!==b.length) return false;
+  try{return crypto.timingSafeEqual(Buffer.from(a),Buffer.from(b))}catch{return false}
+}
+function hashPassword(password,salt){
+  const s=salt||crypto.randomBytes(16).toString("hex");
+  return s+":"+crypto.scryptSync(password,s,64).toString("hex");
+}
+function verifyPassword(password,stored){
+  const parts=String(stored||"").split(":");
+  if(parts.length!==2) return false;
+  const test=hashPassword(password,parts[0]).split(":")[1];
+  if(test.length!==parts[1].length) return false;
+  try{return crypto.timingSafeEqual(Buffer.from(test,"hex"),Buffer.from(parts[1],"hex"))}catch{return false}
+}
+async function getPortalUser(req){
+  const token=cookieValue(req,"intel_session");
+  if(!token) return null;
+  const tokenHash=crypto.createHash("sha256").update(token).digest("hex");
+  const q=await pool.query("select u.id user_id,u.client_id,u.email,u.name user_name,c.name client_name,c.website_url,c.industry,c.geography,c.objective from intel_client_sessions s join intel_client_users u on u.id=s.user_id join intel_clients c on c.id=u.client_id where s.token_hash=$1 and s.expires_at>now() and u.active=true",[tokenHash]);
+  return q.rows[0]||null;
+}
+async function requirePortalUser(req,reply){
+  const u=await getPortalUser(req);
+  if(!u){reply.code(401).send({error:"login_required"});return null}
+  return u;
+}
+
 app.addHook("onRequest",async function(req,reply){
   if(req.url==="/health") return;
   if(req.url.startsWith("/api/run") && RUN_SECRET && req.headers["x-run-secret"]===RUN_SECRET) return;
-  if(!ADMIN_PASSWORD) return;
-  const auth=req.headers.authorization||"";
-  if(!auth.startsWith("Basic ")){
-    reply.header("WWW-Authenticate",'Basic realm="Lucid Logic Intelligence OS"');
-    return reply.code(401).send("Authentication required");
-  }
-  let decoded="";
-  try{decoded=Buffer.from(auth.slice(6),"base64").toString("utf8")}catch{}
-  const pass=decoded.includes(":")?decoded.slice(decoded.indexOf(":")+1):decoded;
-  if(pass!==ADMIN_PASSWORD){
-    reply.header("WWW-Authenticate",'Basic realm="Lucid Logic Intelligence OS"');
-    return reply.code(401).send("Authentication required");
-  }
+  if(req.url.startsWith("/api/portal/")) return;
+  if(req.url==="/api/admin/login"||req.url==="/api/admin/logout") return;
+  if(req.url.startsWith("/api/")&&!isAdmin(req)) return reply.code(401).send({error:"admin_auth_required"});
 });
 
 function parseJson(text){
@@ -120,6 +164,8 @@ async function init(){
   for(const q of schema) await pool.query(q);
   const c=await pool.query("select count(*)::int n from intel_clients");
   if(c.rows[0].n===0) await seed();
+  await pool.query("insert into intel_opportunities(signal_id,client_id,program_id,title,summary,source_name,source_url,document_url,opportunity_type,fit_score,recommendation) select s.id,s.client_id,s.program_id,s.title,s.what_changed,s.source_name,s.source_url,s.source_url,'rfp',least(100,greatest(0,s.confidence)),s.why_it_matters from intel_signals s join intel_programs p on p.id=s.program_id where p.program_type='opportunity' and not exists(select 1 from intel_opportunities o where o.signal_id=s.id)");
+  await pool.query("delete from intel_client_sessions where expires_at<=now()");
 }
 async function seed(){
   const c=await pool.query("insert into intel_clients(name,website_url,industry,geography,objective,profile) values($1,$2,$3,$4,$5,$6) returning id",["Lucid Logic Demo","https://lucidlogic.co","Digital consulting","NY + FL","Find qualified opportunities early and turn intelligence into concrete actions",JSON.stringify({demo:true})]);
@@ -166,16 +212,20 @@ async function discover(client){
 async function runProgram(program,client){
   const rr=await pool.query("insert into intel_runs(program_id,client_id) values($1,$2) returning id",[program.id,client.id]);
   const runId=rr.rows[0].id;
-  if(!AI_KEY){
-    await pool.query("update intel_runs set status='needs_configuration',summary='Add OPENAI_API_KEY to enable live research runs.',finished_at=now() where id=$1",[runId]);
+  if(!(await hasAIKey())){
+    await pool.query("update intel_runs set status='needs_configuration',summary='Add the OpenAI API key in Settings to enable live research runs.',finished_at=now() where id=$1",[runId]);
     return {runId,status:"needs_configuration"};
   }
   try{
-    const prompt="Act as Lucid Logic's managed intelligence analyst. Research the public web for material developments relevant to this client and program.\nCLIENT: "+client.name+"; website "+(client.website_url||"")+"; industry "+(client.industry||"")+"; geography "+(client.geography||"")+"; objective "+(client.objective||"")+".\nPROGRAM: "+program.name+"; type "+program.program_type+"; objective "+program.objective+"; emphasize "+JSON.stringify(program.source_plan)+"; permitted actions "+JSON.stringify(program.action_plan)+".\nFind at most 6 genuinely material recent signals. Avoid routine news and duplicates. For opportunities assess fit, geography, practical value and lead time. Every signal needs an action. Return ONLY JSON with summary and signals. Each signal must include title, what_changed, why_it_matters, source_name, source_url, signal_date, importance 1-3, confidence 0-100, and actions with type,title,rationale,payload.";
+    const prompt="Act as Lucid Logic's managed intelligence analyst. Research the public web for material developments relevant to this client and program.\nCLIENT: "+client.name+"; website "+(client.website_url||"")+"; industry "+(client.industry||"")+"; geography "+(client.geography||"")+"; objective "+(client.objective||"")+".\nPROGRAM: "+program.name+"; type "+program.program_type+"; objective "+program.objective+"; emphasize "+JSON.stringify(program.source_plan)+"; permitted actions "+JSON.stringify(program.action_plan)+".\nFind at most 6 genuinely material recent signals. Avoid routine news and duplicates. For opportunities assess fit, geography, estimated practical value, proposal deadline, Q&A deadline, source document and lead time. Every signal needs an action. Return ONLY JSON with summary and signals. Each signal must include title, what_changed, why_it_matters, source_name, source_url, signal_date, importance 1-3, confidence 0-100, actions with type,title,rationale,payload, and when program type is opportunity include opportunity with opportunity_type, fit_score 0-100, recommendation, deadline YYYY-MM-DD or null, qa_deadline YYYY-MM-DD or null, estimated_value, geography, requirements array, and document_url.";
     const out=parseJson(await openai(prompt,true));
     if(!out||!Array.isArray(out.signals)) throw new Error("Research response did not contain signals");
     for(const s of out.signals.slice(0,6)){
       const ins=await pool.query("insert into intel_signals(run_id,program_id,client_id,title,what_changed,why_it_matters,source_name,source_url,signal_date,importance,confidence) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) returning id",[runId,program.id,client.id,s.title,s.what_changed,s.why_it_matters,s.source_name,s.source_url,s.signal_date||null,s.importance||2,s.confidence||70]);
+      if(program.program_type==="opportunity"){
+        const o=s.opportunity||{};
+        await pool.query("insert into intel_opportunities(signal_id,client_id,program_id,title,summary,source_name,source_url,document_url,opportunity_type,fit_score,recommendation,deadline,qa_deadline,estimated_value,geography,requirements) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) on conflict(signal_id) do update set title=excluded.title,summary=excluded.summary,source_name=excluded.source_name,source_url=excluded.source_url,document_url=excluded.document_url,opportunity_type=excluded.opportunity_type,fit_score=excluded.fit_score,recommendation=excluded.recommendation,deadline=excluded.deadline,qa_deadline=excluded.qa_deadline,estimated_value=excluded.estimated_value,geography=excluded.geography,requirements=excluded.requirements,updated_at=now()",[ins.rows[0].id,client.id,program.id,s.title,s.what_changed,s.source_name,s.source_url,o.document_url||s.source_url,o.opportunity_type||"rfp",o.fit_score||s.confidence||70,o.recommendation||s.why_it_matters,o.deadline||null,o.qa_deadline||null,o.estimated_value||null,o.geography||client.geography||null,JSON.stringify(o.requirements||[])]);
+      }
       for(const a of s.actions||[]) await pool.query("insert into intel_actions(signal_id,client_id,program_id,action_type,title,rationale,payload) values($1,$2,$3,$4,$5,$6,$7)",[ins.rows[0].id,client.id,program.id,a.type,a.title,a.rationale||"",JSON.stringify(a.payload||{})]);
     }
     await pool.query("update intel_programs set last_run_at=now() where id=$1",[program.id]);
@@ -221,16 +271,107 @@ async function executeAction(action){
   return {executed:true,message:"Approved and packaged for delivery",result:payload};
 }
 
+app.post("/api/admin/login",async function(req,reply){
+  const b=req.body||{};
+  if(!SETTINGS_CODE||String(b.code||"")!==SETTINGS_CODE) return reply.code(401).send({error:"Invalid admin access code"});
+  setHttpCookie(reply,"intel_admin",adminToken(),2592000);
+  return {ok:true};
+});
+app.post("/api/admin/logout",async function(req,reply){
+  clearHttpCookie(reply,"intel_admin");
+  return {ok:true};
+});
+app.get("/portal",async function(req,reply){return reply.sendFile("portal.html")});
+
+app.post("/api/portal/login",async function(req,reply){
+  const b=req.body||{};
+  const email=String(b.email||"").trim().toLowerCase();
+  const password=String(b.password||"");
+  const q=await pool.query("select * from intel_client_users where lower(email)=$1 and active=true",[email]);
+  const u=q.rows[0];
+  if(!u||!verifyPassword(password,u.password_hash)) return reply.code(401).send({error:"Invalid email or password"});
+  const token=crypto.randomBytes(32).toString("hex");
+  const tokenHash=crypto.createHash("sha256").update(token).digest("hex");
+  await pool.query("insert into intel_client_sessions(user_id,token_hash,expires_at) values($1,$2,now()+interval '7 days')",[u.id,tokenHash]);
+  await pool.query("update intel_client_users set last_login_at=now() where id=$1",[u.id]);
+  setHttpCookie(reply,"intel_session",token,604800);
+  return {ok:true};
+});
+app.post("/api/portal/logout",async function(req,reply){
+  const token=cookieValue(req,"intel_session");
+  if(token){
+    const tokenHash=crypto.createHash("sha256").update(token).digest("hex");
+    await pool.query("delete from intel_client_sessions where token_hash=$1",[tokenHash]);
+  }
+  clearHttpCookie(reply,"intel_session");
+  return {ok:true};
+});
+app.get("/api/portal/me",async function(req,reply){
+  const u=await requirePortalUser(req,reply);
+  if(!u) return;
+  return {user:{id:u.user_id,email:u.email,name:u.user_name},client:{id:u.client_id,name:u.client_name,website_url:u.website_url,industry:u.industry,geography:u.geography,objective:u.objective}};
+});
+app.get("/api/portal/dashboard",async function(req,reply){
+  const u=await requirePortalUser(req,reply);
+  if(!u) return;
+  const id=u.client_id;
+  const all=await Promise.all([
+    pool.query("select s.*,p.name program_name from intel_signals s join intel_programs p on p.id=s.program_id where s.client_id=$1 order by s.created_at desc limit 80",[id]),
+    pool.query("select * from intel_opportunities where client_id=$1 order by case pursuit_status when 'pursue' then 0 when 'review' then 1 else 2 end,coalesce(deadline,'2999-12-31') asc,created_at desc",[id]),
+    pool.query("select a.*,s.title signal_title from intel_actions a left join intel_signals s on s.id=a.signal_id where a.client_id=$1 order by a.created_at desc limit 120",[id]),
+    pool.query("select id,name,program_type,cadence,objective,last_run_at from intel_programs where client_id=$1 and active=true order by name",[id])
+  ]);
+  return {signals:all[0].rows,opportunities:all[1].rows,actions:all[2].rows,programs:all[3].rows};
+});
+app.post("/api/portal/opportunities/:id/status",async function(req,reply){
+  const u=await requirePortalUser(req,reply);
+  if(!u) return;
+  const status=String((req.body||{}).status||"");
+  if(!["review","pursue","pass"].includes(status)) return reply.code(400).send({error:"Invalid status"});
+  const r=await pool.query("update intel_opportunities set pursuit_status=$1,updated_at=now() where id=$2 and client_id=$3 returning *",[status,Number(req.params.id),u.client_id]);
+  if(!r.rows[0]) return reply.code(404).send({error:"Opportunity not found"});
+  return r.rows[0];
+});
+app.post("/api/portal/opportunities/:id/generate",async function(req,reply){
+  const u=await requirePortalUser(req,reply);
+  if(!u) return;
+  const type=String((req.body||{}).action_type||"questions");
+  if(!["questions","proposal","outreach","email_draft"].includes(type)) return reply.code(400).send({error:"Unsupported action"});
+  const q=await pool.query("select o.*,s.what_changed,s.why_it_matters from intel_opportunities o left join intel_signals s on s.id=o.signal_id where o.id=$1 and o.client_id=$2",[Number(req.params.id),u.client_id]);
+  const o=q.rows[0];
+  if(!o) return reply.code(404).send({error:"Opportunity not found"});
+  let payload={title:o.title,body:(o.summary||o.what_changed||"")+"\n\nRecommendation: "+(o.recommendation||o.why_it_matters||""),notes:"Generated from the opportunity workspace."};
+  if(await hasAIKey()){
+    const prompt="Create a client-ready "+type+" for this opportunity. Company: "+u.client_name+". Opportunity: "+o.title+". Summary: "+(o.summary||o.what_changed||"")+". Recommendation: "+(o.recommendation||o.why_it_matters||"")+". Deadline: "+(o.deadline||"unknown")+". Q&A deadline: "+(o.qa_deadline||"unknown")+". Requirements: "+JSON.stringify(o.requirements||[])+". Source: "+(o.document_url||o.source_url||"")+". Return only JSON with title, body and notes.";
+    const out=parseJson(await openai(prompt,false));
+    if(out) payload=out;
+  }
+  const r=await pool.query("insert into intel_actions(signal_id,client_id,program_id,action_type,title,rationale,payload) values($1,$2,$3,$4,$5,$6,$7) returning *",[o.signal_id,u.client_id,o.program_id,type,payload.title||("Create "+type),"Created from client opportunity decision workflow",JSON.stringify(payload)]);
+  return r.rows[0];
+});
+app.post("/api/portal/actions/:id/approve",async function(req,reply){
+  const u=await requirePortalUser(req,reply);
+  if(!u) return;
+  const q=await pool.query("select * from intel_actions where id=$1 and client_id=$2",[Number(req.params.id),u.client_id]);
+  if(!q.rows[0]) return reply.code(404).send({error:"Action not found"});
+  try{
+    const result=await executeAction(q.rows[0]);
+    await pool.query("update intel_actions set status=$1,executed_at=case when $2 then now() else executed_at end where id=$3",[result.executed?"executed":"approved",result.executed,q.rows[0].id]);
+    return result;
+  }catch(e){return reply.code(500).send({error:e.message})}
+});
+
 app.get("/health",async function(){return {ok:true,service:"Lucid Intelligence OS"}});
 app.get("/api/dashboard",async function(){
   const all=await Promise.all([
     pool.query("select * from intel_clients order by name"),
     pool.query("select p.*,c.name client_name from intel_programs p join intel_clients c on c.id=p.client_id order by c.name,p.name"),
-    pool.query("select s.*,c.name client_name,p.name program_name from intel_signals s join intel_clients c on c.id=s.client_id join intel_programs p on p.id=s.program_id order by s.created_at desc limit 50"),
-    pool.query("select a.*,c.name client_name,s.title signal_title from intel_actions a join intel_clients c on c.id=a.client_id left join intel_signals s on s.id=a.signal_id order by a.created_at desc limit 80"),
-    pool.query("select r.*,p.name program_name,c.name client_name from intel_runs r join intel_programs p on p.id=r.program_id join intel_clients c on c.id=r.client_id order by r.created_at desc limit 30")
+    pool.query("select s.*,c.name client_name,p.name program_name from intel_signals s join intel_clients c on c.id=s.client_id join intel_programs p on p.id=s.program_id order by s.created_at desc limit 80"),
+    pool.query("select a.*,c.name client_name,s.title signal_title from intel_actions a join intel_clients c on c.id=a.client_id left join intel_signals s on s.id=a.signal_id order by a.created_at desc limit 120"),
+    pool.query("select r.*,p.name program_name,c.name client_name from intel_runs r join intel_programs p on p.id=r.program_id join intel_clients c on c.id=r.client_id order by r.created_at desc limit 30"),
+    pool.query("select o.*,c.name client_name,p.name program_name from intel_opportunities o join intel_clients c on c.id=o.client_id left join intel_programs p on p.id=o.program_id order by coalesce(o.deadline,'2999-12-31') asc,o.created_at desc limit 120")
   ]);
-  return {clients:all[0].rows,programs:all[1].rows,signals:all[2].rows,actions:all[3].rows,runs:all[4].rows,aiConfigured:await hasAIKey()};
+  return {clients:all[0].rows,programs:all[1].rows,signals:all[2].rows,actions:all[3].rows,runs:all[4].rows,opportunities:all[5].rows,aiConfigured:await hasAIKey()};
 });
 app.post("/api/clients",async function(req,reply){
   const b=req.body||{};
@@ -243,13 +384,39 @@ app.get("/api/clients/:id",async function(req,reply){
   const all=await Promise.all([
     pool.query("select * from intel_clients where id=$1",[id]),
     pool.query("select * from intel_programs where client_id=$1 order by name",[id]),
-    pool.query("select * from intel_signals where client_id=$1 order by created_at desc limit 50",[id]),
-    pool.query("select * from intel_actions where client_id=$1 order by created_at desc limit 80",[id]),
-    pool.query("select id,client_id,connector_type,name,status,created_at from intel_connectors where client_id=$1 order by created_at",[id])
+    pool.query("select * from intel_signals where client_id=$1 order by created_at desc limit 80",[id]),
+    pool.query("select * from intel_actions where client_id=$1 order by created_at desc limit 120",[id]),
+    pool.query("select id,client_id,connector_type,name,status,created_at from intel_connectors where client_id=$1 order by created_at",[id]),
+    pool.query("select * from intel_opportunities where client_id=$1 order by coalesce(deadline,'2999-12-31') asc,created_at desc",[id]),
+    pool.query("select id,client_id,email,name,active,last_login_at,created_at from intel_client_users where client_id=$1 order by email",[id])
   ]);
   if(!all[0].rows[0]) return reply.code(404).send({error:"Not found"});
-  return {client:all[0].rows[0],programs:all[1].rows,signals:all[2].rows,actions:all[3].rows,connectors:all[4].rows};
+  return {client:all[0].rows[0],programs:all[1].rows,signals:all[2].rows,actions:all[3].rows,connectors:all[4].rows,opportunities:all[5].rows,portalUsers:all[6].rows};
 });
+app.post("/api/clients/:id/portal-users",async function(req,reply){
+  const clientId=Number(req.params.id);
+  const b=req.body||{};
+  const email=String(b.email||"").trim().toLowerCase();
+  const password=String(b.password||"");
+  const name=String(b.name||"").trim();
+  if(!email||!email.includes("@")) return reply.code(400).send({error:"Valid email required"});
+  if(password.length<8) return reply.code(400).send({error:"Password must be at least 8 characters"});
+  const exists=await pool.query("select id,client_id from intel_client_users where lower(email)=$1",[email]);
+  if(exists.rows[0]&&Number(exists.rows[0].client_id)!==clientId) return reply.code(409).send({error:"That email is already assigned to another client"});
+  const passHash=hashPassword(password);
+  let r;
+  if(exists.rows[0]) r=await pool.query("update intel_client_users set name=$1,password_hash=$2,active=true where id=$3 returning id,client_id,email,name,active,last_login_at,created_at",[name||null,passHash,exists.rows[0].id]);
+  else r=await pool.query("insert into intel_client_users(client_id,email,name,password_hash) values($1,$2,$3,$4) returning id,client_id,email,name,active,last_login_at,created_at",[clientId,email,name||null,passHash]);
+  return r.rows[0];
+});
+app.post("/api/opportunities/:id/status",async function(req,reply){
+  const status=String((req.body||{}).status||"");
+  if(!["review","pursue","pass"].includes(status)) return reply.code(400).send({error:"Invalid status"});
+  const r=await pool.query("update intel_opportunities set pursuit_status=$1,updated_at=now() where id=$2 returning *",[status,Number(req.params.id)]);
+  if(!r.rows[0]) return reply.code(404).send({error:"Opportunity not found"});
+  return r.rows[0];
+});
+
 app.post("/api/programs",async function(req,reply){
   const b=req.body||{};
   if(!b.client_id||!b.name||!b.objective) return reply.code(400).send({error:"client_id, name and objective required"});
@@ -339,6 +506,7 @@ app.post("/api/connectors",async function(req,reply){
 });
 app.setNotFoundHandler(function(req,reply){
   if(req.url.startsWith("/api/")) return reply.code(404).send({error:"Not found"});
+  if(req.url.startsWith("/portal")) return reply.sendFile("portal.html");
   return reply.sendFile("index.html");
 });
 
