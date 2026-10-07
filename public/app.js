@@ -192,7 +192,7 @@ qa(".nav").forEach(function(n){n.onclick=function(){state.view=n.dataset.view;re
 q("#refreshBtn").onclick=load;
 q("#newClientBtn").onclick=function(){window.newClient()};
 q("#modalClose").onclick=function(){q("#modal").classList.add("hidden")};
-q("#modal").onclick=function(e){if(e.target.id==="modal")q("#modal").classList.add("hidden")};
+q("#modal").onclick=function(e){if(e.target.id==="modal"&&q("#modalClose").style.display!=="none")q("#modal").classList.add("hidden")};
 function modal(html){q("#modalClose").style.display="";q("#modalBody").innerHTML=html;q("#modal").classList.remove("hidden")}
 
 function showAdminLogin(){
