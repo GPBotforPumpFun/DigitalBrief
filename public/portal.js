@@ -88,23 +88,26 @@ function overview(){
   const hasOpp=hasOpportunityProgram();
   const open=hasOpp?d.opportunities.filter(o=>o.pursuit_status!=="pass"):[];
   const pending=d.actions.filter(a=>a.status==="proposed");
-  const newIntel=d.signals.filter(s=>Date.now()-new Date(s.created_at).getTime()<7*86400000);
+  const intelSignals=d.signals.filter(sig=>sig.program_type!=="opportunity");
+  const newIntel=intelSignals.filter(sig=>Date.now()-new Date(sig.created_at).getTime()<7*86400000);
   const topOpp=hasOpp?open[0]:null;
   const topAction=pending[0];
-  const topIntel=d.signals[0];
+  const topIntel=intelSignals[0];
   const priorities=[
     topOpp?priorityRow("OPPORTUNITY",topOpp.title,(topOpp.deadline?"Due "+new Date(topOpp.deadline+"T12:00:00").toLocaleDateString():"Review fit and decide whether to pursue"),"go('opportunities')","Review"):null,
     topAction?priorityRow("ACTION",topAction.title,actionInfo(topAction.action_type).desc,"go('actions')","Open"):null,
     topIntel?priorityRow("NEW INTELLIGENCE",topIntel.title,topIntel.why_it_matters,"go('intelligence')","Read"):null
   ].filter(Boolean).join("");
   const programs=d.programs.map(p=>'<div class="watch-item"><div class="watch-dot"></div><div><b>'+esc(p.name)+'</b><span>'+esc(p.cadence)+' monitoring · '+esc(nice(p.program_type))+'</span></div></div>').join("");
+  const hasIntel=intelSignals.length>0||d.programs.some(p=>p.program_type!=="opportunity");
   const metrics=(hasOpp?metric("Open opportunities",open.length,"RFPs, grants and pursuits","accent"):"")+
     metric("Needs your approval",pending.length,"Prepared actions waiting on you")+
-    metric("New intelligence",newIntel.length,"Material findings in the last 7 days")+
+    (hasIntel?metric("New intelligence",newIntel.length,"Material findings in the last 7 days"):"")+
     metric("Active monitors",d.programs.length,"Areas Lucid Logic is continuously watching");
+  const metricCount=(hasOpp?1:0)+1+(hasIntel?1:0)+1;
 
   return '<div class="welcome"><div><p class="eyebrow">MANAGED FOR '+esc(state.me.client.name.toUpperCase())+'</p><h2>What needs your attention</h2><p>Lucid Logic is monitoring in the background. You only need to come here when something matters or a decision is needed.</p></div></div>'+
-  '<div class="metrics '+(hasOpp?"":"metrics-three")+'">'+metrics+'</div>'+
+  '<div class="metrics metrics-'+metricCount+'">'+metrics+'</div>'+
   '<div class="overview-grid"><div class="panel priority-panel"><div class="panel-head"><div><h2>Priority inbox</h2><p class="muted">The few things worth looking at now.</p></div></div>'+(priorities||'<div class="empty">Nothing needs your attention right now.</div>')+'</div>'+
   '<div class="panel watch-panel"><div class="panel-head"><div><h2>What we are watching</h2><p class="muted">You do not need to manage these. Lucid Logic does.</p></div></div>'+programs+'</div></div>';
 }
@@ -143,9 +146,12 @@ const titles={overview:"Overview",opportunities:"Opportunities",intelligence:"In
 const views={overview,opportunities,intelligence,actions};
 function configureNavigation(){
   const oppNav=q('.nav[data-view="opportunities"]');
+  const intelNav=q('.nav[data-view="intelligence"]');
   const hasOpp=hasOpportunityProgram();
+  const hasIntel=state.data.programs.some(p=>p.program_type!=="opportunity");
   if(oppNav) oppNav.classList.toggle("hidden",!hasOpp);
-  if(!hasOpp&&state.view==="opportunities") state.view="overview";
+  if(intelNav) intelNav.classList.toggle("hidden",!hasIntel);
+  if((!hasOpp&&state.view==="opportunities")||(!hasIntel&&state.view==="intelligence")) state.view="overview";
 }
 function render(){
   configureNavigation();
