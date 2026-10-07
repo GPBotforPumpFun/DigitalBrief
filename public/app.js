@@ -436,7 +436,7 @@ window.editProgram=async function(id){
     '<form id="editProgramForm"><div class="form-grid">'+
     '<div class="field"><label>Program name</label><input name="name" required value="'+esc(p.name)+'"></div>'+
     '<div class="field"><label>Type</label><select name="program_type">'+["opportunity","competitor","visibility","industry","account","custom"].map(function(v){return '<option value="'+v+'" '+(p.program_type===v?"selected":"")+'>'+nice(v)+'</option>'}).join("")+'</select></div>'+
-    '<div class="field"><label>Cadence</label><select name="cadence">'+["daily","weekday","weekly","monthly"].map(function(v){return '<option value="'+v+'" '+(p.cadence===v?"selected":"")+'>'+nice(v)+'</option>'}).join("")+'</select></div>'+
+    '<div class="field"><label>Cadence</label><select name="cadence">'+["hourly","daily","weekday","weekly","monthly"].map(function(v){return '<option value="'+v+'" '+(p.cadence===v?"selected":"")+'>'+nice(v)+'</option>'}).join("")+'</select></div>'+
     '<div class="field"><label>Status</label><select name="active"><option value="true" '+(p.active?"selected":"")+'>Active</option><option value="false" '+(!p.active?"selected":"")+'>Paused</option></select></div>'+
     '<div class="field full"><label>Objective</label><textarea name="objective" required>'+esc(p.objective||"")+'</textarea></div>'+
     '<div class="field full"><label>Analyst instructions</label><textarea name="analyst_instructions" placeholder="Specific judgment rules, exclusions, geography, thresholds, competitors, terminology...">'+esc(p.analyst_instructions||"")+'</textarea></div>'+
@@ -459,7 +459,7 @@ window.programForm=function(id){
   modal('<h2 class="section-title">Add intelligence program</h2><p class="section-sub">Define exactly what Lucid Logic should watch and what actions may follow.</p>'+
   '<form id="programForm"><div class="form-grid"><div class="field"><label>Program name</label><input name="name" required placeholder="Revenue Opportunity Radar"></div>'+
   '<div class="field"><label>Type</label><select name="program_type"><option value="opportunity">Opportunity</option><option value="competitor">Competitor</option><option value="visibility">Reputation + AI Visibility</option><option value="industry">Industry</option><option value="account">Account</option><option value="custom">Custom</option></select></div>'+
-  '<div class="field"><label>Cadence</label><select name="cadence"><option value="weekday">Weekdays</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select></div>'+
+  '<div class="field"><label>Cadence</label><select name="cadence"><option value="hourly">Hourly</option><option value="daily">Daily</option><option value="weekday" selected>Weekdays</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select></div>'+
   '<div class="field full"><label>Objective</label><textarea name="objective" required placeholder="What should this program detect, and why does it matter?"></textarea></div>'+
   '<div class="field full"><label>Analyst instructions</label><textarea name="analyst_instructions" placeholder="What should be included or excluded? Geography, thresholds, competitors, terminology, decision rules..."></textarea></div>'+
   '<div class="field full"><label>Sources / queries, one per line</label><textarea name="sources" placeholder="RFP portals\nIndustry association\nSpecific competitor URLs"></textarea></div>'+
