@@ -319,10 +319,19 @@ window.openClient=async function(id){
     const connectors=x.connectors.map(function(k){return '<span class="pill">'+esc(k.name)+'</span>'}).join(" ");
     const priorities=Array.isArray(p.priorities)?'<div class="code">• '+esc(p.priorities.join("\n• "))+'</div>':"";
     const portalUsers=(x.portalUsers||[]).map(function(u){return '<div class="portal-user"><div><b>'+esc(u.name||u.email)+'</b><div class="muted">'+esc(u.email)+(u.last_login_at?' · last login '+ago(u.last_login_at):' · never logged in')+'</div></div><button class="btn small" onclick="portalUserForm('+c.id+',&quot;'+esc(u.email)+'&quot;,&quot;'+esc(u.name||"")+'&quot;)">Reset password</button></div>'}).join("")||'<div class="empty">No client portal users yet.</div>';
+    const delivery=x.delivery||{brief_enabled:true,urgent_enabled:true};
+    const activeUsers=(x.portalUsers||[]).filter(function(u){return u.active});
+    const recipients=activeUsers.length?'<div class="recipient-list">'+activeUsers.map(function(u){return '<span class="pill">'+esc(u.email)+'</span>'}).join(" ")+'</div>':'<div class="empty">Add a portal user before daily briefs can be delivered.</div>';
+    const briefHistory=(x.briefHistory||[]).slice(0,4).map(function(b){return '<div class="brief-history-row"><span>'+new Date(b.sent_at).toLocaleString()+'</span><b>'+esc(nice(b.status))+'</b><small>'+esc(b.new_signal_count||0)+' intel · '+esc(b.open_action_count||0)+' actions · '+esc(b.open_opportunity_count||0)+' opps</small></div>'}).join("")||'<div class="muted">No briefs sent yet.</div>';
+
     modal('<h2 class="section-title">'+esc(c.name)+'</h2><p class="section-sub">'+esc(c.website_url||"")+' · '+esc(c.industry||"")+'</p>'+
     '<div class="split"><div><div class="panel"><h3>Intelligence mandate</h3><p>'+esc(c.objective||"Not defined yet.")+'</p><button class="btn gold" onclick="discover('+c.id+')">Analyze website + design intel</button></div>'+
     '<div class="panel"><div class="panel-head"><h3>Programs</h3><button class="btn small" onclick="programForm('+c.id+')">+ Add program</button></div>'+programs+'</div></div><div><div class="profile-box"><h3>WEBSITE-DERIVED PROFILE</h3><p>'+esc(p.summary||"Run Analyze website to create a business-specific source and action blueprint.")+'</p>'+priorities+'</div>'+
     '<div class="panel"><div class="panel-head"><h3>Client Portal Access</h3><a class="btn small" href="/portal" target="_blank">Open portal ↗</a></div><p class="muted">Client users can only see this company. They never get the client selector or Lucid Logic configuration tools.</p>'+portalUsers+'<div class="actions"><button class="btn gold small" onclick="portalUserForm('+c.id+')">+ Add portal user</button></div></div>'+
+    '<div class="panel"><div class="panel-head"><h3>Email Brief Delivery</h3><span class="pill">'+(delivery.brief_enabled?'Daily brief on':'Daily brief off')+'</span></div><p class="muted">Briefs are the default delivery channel. Actionable items open the exact portal decision with a secure sign-in link.</p>'+recipients+
+    '<div class="delivery-toggles"><label><input id="briefEnabled-'+c.id+'" type="checkbox" '+(delivery.brief_enabled?'checked':'')+'> Daily brief</label><label><input id="urgentEnabled-'+c.id+'" type="checkbox" '+(delivery.urgent_enabled?'checked':'')+'> Separate urgent alerts</label></div>'+
+    '<div class="actions"><button class="btn small" onclick="saveDelivery('+c.id+')">Save delivery settings</button><button class="btn gold small" onclick="sendClientBrief('+c.id+')">Send brief now</button></div>'+
+    '<div class="brief-history"><b>Recent delivery</b>'+briefHistory+'</div></div>'+
     '<div class="panel"><h3>Connect action channel</h3><p class="muted">Website, social, webhook or delivery integration.</p><button class="btn" onclick="connectorForm('+c.id+')">+ Add connector</button><div style="margin-top:12px">'+connectors+'</div></div></div></div>');
   }catch(e){toast(e.message)}
 };
