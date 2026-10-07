@@ -141,13 +141,23 @@ function actionsView(){
     return '<h3 style="margin-top:22px">'+nice(g)+'</h3>'+(html||'<div class="empty">None</div>');
   }).join("")+'</div>';
 }
+function latestRunForProgram(programId){
+  const runs=(state.data&&state.data.runs)||[];
+  return runs.find(function(r){return String(r.program_id)===String(programId)})||null;
+}
+function runStatusLabel(p){
+  const r=latestRunForProgram(p.id);
+  if(r&&r.status==="running") return "Running now…";
+  if(r&&r.status==="failed") return "Last run failed";
+  return "Last run: "+ago(p.last_run_at);
+}
 function programsView(){
   const items=scoped(state.data.programs);
   const html=items.map(function(p){
     return '<div class="program program-admin"><div class="row"><div><div class="type">'+esc(p.program_type)+' · '+esc(p.cadence)+'</div><h3>'+esc(p.name)+'</h3></div>'+
     '<span class="pill '+(p.active?"":"high")+'">'+(p.active?"Active":"Paused")+'</span></div><p>'+esc(p.objective)+'</p>'+
-    '<div class="program-flags"><span class="pill">'+(p.client_visible?"Visible to client":"Admin only")+'</span><span class="pill">Last run: '+ago(p.last_run_at)+'</span></div>'+
-    '<div class="actions"><button class="btn small" onclick="openProgram('+p.id+')">Program details</button><button class="btn gold small" onclick="runProgram('+p.id+')">Run now</button></div></div>';
+    '<div class="program-flags"><span class="pill">'+(p.client_visible?"Visible to client":"Admin only")+'</span><span class="pill">'+esc(runStatusLabel(p))+'</span></div>'+
+    '<div class="actions"><button class="btn small" onclick="openProgram('+p.id+')">Program details</button><button class="btn gold small" onclick="runProgram('+p.id+')">'+(latestRunForProgram(p.id)&&latestRunForProgram(p.id).status==="running"?"Running…":"Run research")+'</button></div></div>';
   }).join("");
   return '<div class="panel"><div class="panel-head"><div><h2>Intelligence programs</h2><div class="muted">Configure exactly what each program watches, how it judges relevance, what clients can see, and what actions it can create.</div></div></div><div class="program-list">'+(html||'<div class="empty">No programs for this client.</div>')+'</div></div>';
 }
@@ -385,12 +395,33 @@ window.discover=async function(id){
   toast("Analyzing website...");
   try{await api("/api/clients/"+id+"/discover",{method:"POST",body:"{}"});toast("Blueprint created");window.openClient(id);load()}catch(e){toast(e.message)}
 };
+async function waitForRun(runId,programId,openDetail){
+  const started=Date.now();
+  while(Date.now()-started<240000){
+    await new Promise(function(resolve){setTimeout(resolve,3000)});
+    try{
+      const r=await api("/api/runs/"+runId);
+      await load();
+      if(openDetail) window.openProgram(programId);
+      if(r.status==="done"){
+        toast("Research complete: "+(r.accepted_count||0)+" accepted, "+(r.rejected_count||0)+" rejected");
+        return r;
+      }
+      if(r.status==="failed"||r.status==="needs_configuration"){
+        toast(r.summary||"Research run failed");
+        return r;
+      }
+    }catch(e){toast(e.message);return null}
+  }
+  toast("Research is still running. You can leave this page and come back.");
+  return null;
+}
 window.runProgram=async function(id){
-  toast("Research run started...");
   try{
     const r=await api("/api/programs/"+id+"/run",{method:"POST",body:"{}"});
-    toast(r.status==="needs_configuration"?"Add your OpenAI key in Settings for live research":"Research complete");
+    toast(r.alreadyRunning?"Research is already running…":"Research queued. This can take 1–3 minutes.");
     await load();
+    waitForRun(r.runId,id,false);
   }catch(e){toast(e.message)}
 };
 window.generateAction=async function(signal_id,action_type){
@@ -411,7 +442,7 @@ window.openProgram=async function(id){
     const runs=(x.runs||[]).slice(0,10).map(function(r){
       const m=r.run_meta||{},u=m.usage||{},rej=Array.isArray(m.rejected_notes)&&m.rejected_notes.length?'<div class="run-rejected"><b>Noise rejected:</b> '+esc(m.rejected_notes.join(" · "))+'</div>':"";
       const usage=(u.total_tokens||u.input_tokens||u.output_tokens)?' · Tokens '+esc(u.total_tokens||((u.input_tokens||0)+(u.output_tokens||0))):"";
-      return '<div class="run-row"><div><b>'+esc(nice(r.status))+'</b><span>'+new Date(r.created_at).toLocaleString()+' · Accepted '+esc(r.accepted_count||0)+' · Rejected '+esc(r.rejected_count||0)+usage+'</span></div><div class="run-summary">'+esc(r.summary||"No summary")+'</div>'+rej+'</div>';
+      return '<div class="run-row"><div><b>'+esc(r.status==="running"?"Researching…":nice(r.status))+'</b><span>'+new Date(r.created_at).toLocaleString()+' · Accepted '+esc(r.accepted_count||0)+' · Rejected '+esc(r.rejected_count||0)+usage+'</span></div><div class="run-summary">'+esc(r.status==="running"?"Scanning sources and analyzing results. This can take 1–3 minutes.":(r.summary||"No summary"))+'</div>'+rej+'</div>';
     }).join("")||'<div class="empty">This program has not run yet.</div>';
     const findings=(x.signals||[]).slice(0,8).map(function(sig){return '<div class="finding-row"><div><b>'+esc(sig.title)+'</b><span>'+ago(sig.created_at)+' · '+esc(sig.confidence||70)+'% confidence</span></div>'+metadataBadges(sig.metadata)+'</div>'}).join("")||'<div class="empty">No accepted intelligence yet.</div>';
     modal('<div class="program-detail-head"><div><div class="type">'+esc(p.program_type)+' · '+esc(p.cadence)+'</div><h2 class="section-title">'+esc(p.name)+'</h2><p class="section-sub">'+esc(p.client_name)+' · '+(p.active?"Active":"Paused")+' · '+(p.client_visible?"Visible in client portal":"Admin only")+'</p></div>'+
@@ -422,12 +453,12 @@ window.openProgram=async function(id){
   }catch(e){toast(e.message)}
 };
 window.runProgramFromDetail=async function(id){
-  toast("Research run started...");
   try{
     const r=await api("/api/programs/"+id+"/run",{method:"POST",body:"{}"});
-    toast(r.status==="needs_configuration"?"Add your OpenAI key in Settings":"Research complete: "+(r.count||0)+" accepted, "+(r.rejected||0)+" rejected");
+    toast(r.alreadyRunning?"Research is already running…":"Research queued. This can take 1–3 minutes.");
     await load();
     window.openProgram(id);
+    waitForRun(r.runId,id,true);
   }catch(e){toast(e.message)}
 };
 window.editProgram=async function(id){
