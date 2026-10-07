@@ -79,10 +79,28 @@ function actionCard(a){
   (a.rationale?'<p class="muted">'+esc(a.rationale)+'</p>':"")+body+buttons+'</article>';
 }
 
+function opportunityDate(value){
+  if(!value) return "Not found";
+  let d;
+  if(value instanceof Date) d=value;
+  else {
+    const raw=String(value);
+    const iso=raw.match(/^\d{4}-\d{2}-\d{2}/);
+    d=iso?new Date(iso[0]+"T12:00:00"):new Date(raw);
+  }
+  return Number.isNaN(d.getTime())?"Not found":d.toLocaleDateString();
+}
+function opportunityDateValue(value){
+  if(!value) return Number.MAX_SAFE_INTEGER;
+  const raw=String(value);
+  const iso=raw.match(/^\d{4}-\d{2}-\d{2}/);
+  const d=iso?new Date(iso[0]+"T12:00:00"):new Date(raw);
+  return Number.isNaN(d.getTime())?Number.MAX_SAFE_INTEGER:d.getTime();
+}
 function opportunityCard(o){
   const source=o.document_url||o.source_url||"";
-  const due=o.deadline?new Date(o.deadline+"T12:00:00").toLocaleDateString():"Not found";
-  const qa=o.qa_deadline?new Date(o.qa_deadline+"T12:00:00").toLocaleDateString():"Not found";
+  const due=opportunityDate(o.deadline);
+  const qa=opportunityDate(o.qa_deadline);
   const reqs=Array.isArray(o.requirements)&&o.requirements.length?'<div class="opp-req"><b>Key requirements</b><ul>'+o.requirements.slice(0,6).map(function(r){return '<li>'+esc(typeof r==="string"?r:JSON.stringify(r))+'</li>'}).join("")+'</ul></div>':"";
   return '<article class="opportunity-card"><div class="row"><div><div class="meta"><span>'+esc(o.client_name||"")+'</span><span>•</span><span>'+esc(nice(o.opportunity_type||"opportunity"))+'</span><span>•</span><span>'+esc(o.program_name||"")+'</span></div><h3>'+esc(o.title)+'</h3></div>'+
   '<div class="fit-score"><strong>'+esc(o.fit_score||0)+'</strong><span>FIT</span></div></div>'+
@@ -129,8 +147,8 @@ function sortOpportunities(items,sort){
   const list=items.slice();
   list.sort(function(a,b){
     if(sort==="deadline"){
-      const ad=a.deadline?new Date(a.deadline+"T12:00:00").getTime():Number.MAX_SAFE_INTEGER;
-      const bd=b.deadline?new Date(b.deadline+"T12:00:00").getTime():Number.MAX_SAFE_INTEGER;
+      const ad=opportunityDateValue(a.deadline);
+      const bd=opportunityDateValue(b.deadline);
       if(ad!==bd)return ad-bd;
       return Number(b.fit_score||0)-Number(a.fit_score||0);
     }
