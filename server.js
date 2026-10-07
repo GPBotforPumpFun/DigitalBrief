@@ -336,6 +336,7 @@ async function init(){
   await pool.query("delete from intel_signals where source_url='https://example.com/rfp' or source_name='Demo source' or title='Regional website modernization RFP identified'");
 
   await pool.query("insert into intel_opportunities(signal_id,client_id,program_id,title,summary,source_name,source_url,document_url,opportunity_type,fit_score,recommendation) select s.id,s.client_id,s.program_id,s.title,s.what_changed,s.source_name,s.source_url,s.source_url,'rfp',least(100,greatest(0,s.confidence)),s.why_it_matters from intel_signals s join intel_programs p on p.id=s.program_id where p.program_type='opportunity' and not exists(select 1 from intel_opportunities o where o.signal_id=s.id)");
+  await repairOpportunityDates();
   await pool.query("delete from intel_client_sessions where expires_at<=now()");
 }
 async function seed(){
@@ -378,6 +379,57 @@ async function discover(client){
   await pool.query("update intel_clients set profile=$1 where id=$2",[JSON.stringify(blueprint),client.id]);
   return blueprint;
 }
+function toISODate(value){
+  if(!value) return null;
+  if(value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().slice(0,10);
+  const raw=String(value).trim();
+  const iso=raw.match(/\b(20\d{2})-(\d{2})-(\d{2})\b/);
+  if(iso) return iso[1]+"-"+iso[2]+"-"+iso[3];
+  const d=new Date(raw);
+  return Number.isNaN(d.getTime())?null:d.toISOString().slice(0,10);
+}
+function monthNameDateToISO(value){
+  const d=new Date(String(value).replace(/\bSept\b/i,"Sep"));
+  return Number.isNaN(d.getTime())?null:d.toISOString().slice(0,10);
+}
+function inferOpportunityDate(text,kind){
+  const src=String(text||"").replace(/\s+/g," ");
+  const month="(?:January|February|March|April|May|June|July|August|September|Sept\\.?|October|November|December)";
+  const date="("+month+"\\s+\\d{1,2}(?:st|nd|rd|th)?[,]?\\s+20\\d{2})";
+  const lead=kind==="qa"
+    ?"(?:Q\\s*&\\s*A|questions?|inquiries|clarifications?)"
+    :"(?:proposals?|responses?|bids?|applications?|submissions?|proposal deadline|response deadline|bid deadline)";
+  const patterns=[
+    new RegExp(lead+"[^.]{0,90}?(?:due|deadline|close|closing|must be received)[^.]{0,70}?"+date,"i"),
+    new RegExp(lead+"[^.]{0,45}?"+date,"i"),
+    new RegExp("(?:due|deadline|close|closing)[^.]{0,70}?"+date,"i")
+  ];
+  for(const re of patterns){
+    const m=src.match(re);
+    if(m){
+      const candidate=m[m.length-1].replace(/(\d)(st|nd|rd|th)/i,"$1");
+      const iso=monthNameDateToISO(candidate);
+      if(iso) return iso;
+    }
+  }
+  return null;
+}
+function normalizeOpportunityDates(o,item){
+  const text=[item?.title,item?.what_changed,item?.why_it_matters,o?.recommendation].filter(Boolean).join(". ");
+  return {
+    deadline:toISODate(o?.deadline)||inferOpportunityDate(text,"deadline"),
+    qa_deadline:toISODate(o?.qa_deadline)||inferOpportunityDate(text,"qa")
+  };
+}
+async function repairOpportunityDates(){
+  const q=await pool.query("select id,title,summary,recommendation,deadline,qa_deadline from intel_opportunities where deadline is null or qa_deadline is null");
+  for(const o of q.rows){
+    const dates=normalizeOpportunityDates(o,{title:o.title,what_changed:o.summary,why_it_matters:o.recommendation});
+    if((!o.deadline&&dates.deadline)||(!o.qa_deadline&&dates.qa_deadline)){
+      await pool.query("update intel_opportunities set deadline=coalesce(deadline,$1),qa_deadline=coalesce(qa_deadline,$2),updated_at=now() where id=$3",[dates.deadline,dates.qa_deadline,o.id]);
+    }
+  }
+}
 async function cleanupStaleRuns(){
   await pool.query("update intel_runs set status='failed',summary=coalesce(nullif(summary,''),'Run was interrupted before completion. Please run it again.'),finished_at=now() where status='running' and created_at<now()-interval '10 minutes'");
 }
@@ -392,7 +444,7 @@ async function runProgram(program,client,options={}){
     return {runId,status:"needs_configuration"};
   }
   try{
-    const prompt="Act as Lucid Logic's managed intelligence analyst. Research the public web for material developments relevant to this client and program.\nCLIENT: "+client.name+"; website "+(client.website_url||"")+"; industry "+(client.industry||"")+"; geography "+(client.geography||"")+"; objective "+(client.objective||"")+".\nPROGRAM: "+program.name+"; type "+program.program_type+"; objective "+program.objective+"; emphasize "+JSON.stringify(program.source_plan)+"; permitted actions "+JSON.stringify(program.action_plan)+".\nANALYST INSTRUCTIONS: "+(program.analyst_instructions||"Use sound judgment. Prefer material, actionable developments over volume.")+".\nFind at most 6 genuinely material recent signals. Reject routine news, duplicates, vague commentary and items with no clear business consequence. For every accepted signal explain what changed and why it matters. Every signal may recommend actions from the permitted action types. Return ONLY JSON with summary, rejected_count, rejected_notes (short array), and signals. Each signal must include title, what_changed, why_it_matters, source_name, source_url, signal_date, importance 1-3, confidence 0-100, metadata object, actions with type,title,rationale,payload. Metadata should preserve type-specific facts: competitor name/change type for competitor intelligence; account/company/trigger/contact clues for account intelligence; platform/metric/old_value/new_value/query for visibility intelligence; regulator/topic/effective_date for industry intelligence. For opportunities also include opportunity with opportunity_type, fit_score 0-100, recommendation, deadline YYYY-MM-DD or null, qa_deadline YYYY-MM-DD or null, estimated_value, geography, requirements array, and document_url.";
+    const prompt="Act as Lucid Logic's managed intelligence analyst. Research the public web for material developments relevant to this client and program.\nCLIENT: "+client.name+"; website "+(client.website_url||"")+"; industry "+(client.industry||"")+"; geography "+(client.geography||"")+"; objective "+(client.objective||"")+".\nPROGRAM: "+program.name+"; type "+program.program_type+"; objective "+program.objective+"; emphasize "+JSON.stringify(program.source_plan)+"; permitted actions "+JSON.stringify(program.action_plan)+".\nANALYST INSTRUCTIONS: "+(program.analyst_instructions||"Use sound judgment. Prefer material, actionable developments over volume.")+".\nFind at most 6 genuinely material recent signals. Reject routine news, duplicates, vague commentary and items with no clear business consequence. For every accepted signal explain what changed and why it matters. Every signal may recommend actions from the permitted action types. Return ONLY JSON with summary, rejected_count, rejected_notes (short array), and signals. Each signal must include title, what_changed, why_it_matters, source_name, source_url, signal_date, importance 1-3, confidence 0-100, metadata object, actions with type,title,rationale,payload. Metadata should preserve type-specific facts: competitor name/change type for competitor intelligence; account/company/trigger/contact clues for account intelligence; platform/metric/old_value/new_value/query for visibility intelligence; regulator/topic/effective_date for industry intelligence. For opportunities also include opportunity with opportunity_type, fit_score 0-100, recommendation, deadline YYYY-MM-DD or null, qa_deadline YYYY-MM-DD or null, estimated_value, geography, requirements array, and document_url. IMPORTANT: if a proposal/bid/application due date or question/Q&A due date appears anywhere in the source text, extract it into the matching date field. Never leave a date field null when the source explicitly states that date.";
     const response=await openaiDetailed(prompt,true);
     const out=parseJson(response&&response.text);
     if(!out||!Array.isArray(out.signals)) throw new Error("Research response did not contain signals");
@@ -402,7 +454,8 @@ async function runProgram(program,client,options={}){
       accepted++;
       if(program.program_type==="opportunity"){
         const o=item.opportunity||{};
-        await pool.query("insert into intel_opportunities(signal_id,client_id,program_id,title,summary,source_name,source_url,document_url,opportunity_type,fit_score,recommendation,deadline,qa_deadline,estimated_value,geography,requirements) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) on conflict(signal_id) do update set title=excluded.title,summary=excluded.summary,source_name=excluded.source_name,source_url=excluded.source_url,document_url=excluded.document_url,opportunity_type=excluded.opportunity_type,fit_score=excluded.fit_score,recommendation=excluded.recommendation,deadline=excluded.deadline,qa_deadline=excluded.qa_deadline,estimated_value=excluded.estimated_value,geography=excluded.geography,requirements=excluded.requirements,updated_at=now()",[ins.rows[0].id,client.id,program.id,item.title,item.what_changed,item.source_name,item.source_url,o.document_url||item.source_url,o.opportunity_type||"rfp",o.fit_score||item.confidence||70,o.recommendation||item.why_it_matters,o.deadline||null,o.qa_deadline||null,o.estimated_value||null,o.geography||client.geography||null,JSON.stringify(o.requirements||[])]);
+        const dates=normalizeOpportunityDates(o,item);
+        await pool.query("insert into intel_opportunities(signal_id,client_id,program_id,title,summary,source_name,source_url,document_url,opportunity_type,fit_score,recommendation,deadline,qa_deadline,estimated_value,geography,requirements) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) on conflict(signal_id) do update set title=excluded.title,summary=excluded.summary,source_name=excluded.source_name,source_url=excluded.source_url,document_url=excluded.document_url,opportunity_type=excluded.opportunity_type,fit_score=excluded.fit_score,recommendation=excluded.recommendation,deadline=excluded.deadline,qa_deadline=excluded.qa_deadline,estimated_value=excluded.estimated_value,geography=excluded.geography,requirements=excluded.requirements,updated_at=now()",[ins.rows[0].id,client.id,program.id,item.title,item.what_changed,item.source_name,item.source_url,o.document_url||item.source_url,o.opportunity_type||"rfp",o.fit_score||item.confidence||70,o.recommendation||item.why_it_matters,dates.deadline,dates.qa_deadline,o.estimated_value||null,o.geography||client.geography||null,JSON.stringify(o.requirements||[])]);
       }
       for(const a of item.actions||[]) await pool.query("insert into intel_actions(signal_id,client_id,program_id,action_type,title,rationale,payload) values($1,$2,$3,$4,$5,$6,$7)",[ins.rows[0].id,client.id,program.id,a.type,a.title,a.rationale||"",JSON.stringify(a.payload||{})]);
     }
