@@ -90,14 +90,26 @@ function overview(){
   const pending=d.actions.filter(a=>a.status==="proposed");
   const intelSignals=d.signals.filter(sig=>sig.program_type!=="opportunity");
   const newIntel=intelSignals.filter(sig=>Date.now()-new Date(sig.created_at).getTime()<7*86400000);
-  const topOpp=hasOpp?open[0]:null;
-  const topAction=pending[0];
-  const topIntel=intelSignals[0];
-  const priorities=[
-    topOpp?priorityRow("OPPORTUNITY",topOpp.title,(topOpp.deadline?"Due "+new Date(topOpp.deadline+"T12:00:00").toLocaleDateString():"Review fit and decide whether to pursue"),"go('opportunities')","Review"):null,
-    topAction?priorityRow("ACTION",topAction.title,actionInfo(topAction.action_type).desc,"go('actions')","Open"):null,
-    topIntel?priorityRow("NEW INTELLIGENCE",topIntel.title,topIntel.why_it_matters,"go('intelligence')","Read"):null
-  ].filter(Boolean).join("");
+  const priorityRows=[];
+  if(hasOpp&&open[0]){
+    const o=open[0];
+    priorityRows.push(priorityRow("OPPORTUNITY",o.title,(o.deadline?"Due "+new Date(o.deadline+"T12:00:00").toLocaleDateString():"Review fit and decide whether to pursue"),"go('opportunities')","Review"));
+  }
+  pending.slice(0,2).forEach(function(a){
+    priorityRows.push(priorityRow("ACTION",a.title,actionInfo(a.action_type).desc,"go('actions')","Open"));
+  });
+  const rankedIntel=intelSignals.slice().sort(function(a,b){
+    const ia=Number(a.importance||0),ib=Number(b.importance||0);
+    if(ib!==ia) return ib-ia;
+    const ca=Number(a.confidence||0),cb=Number(b.confidence||0);
+    if(cb!==ca) return cb-ca;
+    return new Date(b.created_at)-new Date(a.created_at);
+  });
+  const remaining=Math.max(0,5-priorityRows.length);
+  rankedIntel.slice(0,remaining).forEach(function(sig){
+    priorityRows.push(priorityRow("NEW INTELLIGENCE",sig.title,sig.why_it_matters,"go('intelligence')","Read"));
+  });
+  const priorities=priorityRows.join("");
   const programs=d.programs.map(p=>'<div class="watch-item"><div class="watch-dot"></div><div><b>'+esc(p.name)+'</b><span>'+esc(p.cadence)+' monitoring · '+esc(nice(p.program_type))+'</span></div></div>').join("");
   const hasIntel=intelSignals.length>0||d.programs.some(p=>p.program_type!=="opportunity");
   const metrics=(hasOpp?metric("Open opportunities",open.length,"RFPs, grants and pursuits","accent"):"")+
@@ -108,7 +120,8 @@ function overview(){
 
   return '<div class="welcome"><div><p class="eyebrow">MANAGED FOR '+esc(state.me.client.name.toUpperCase())+'</p><h2>What needs your attention</h2><p>Lucid Logic is monitoring in the background. You only need to come here when something matters or a decision is needed.</p></div></div>'+
   '<div class="metrics metrics-'+metricCount+'">'+metrics+'</div>'+
-  '<div class="overview-grid"><div class="panel priority-panel"><div class="panel-head"><div><h2>Priority inbox</h2><p class="muted">The few things worth looking at now.</p></div></div>'+(priorities||'<div class="empty">Nothing needs your attention right now.</div>')+'</div>'+
+  '<div class="overview-grid"><div class="panel priority-panel"><div class="panel-head"><div><h2>Priority inbox</h2><p class="muted">The highest-priority decisions and intelligence right now, not the full feed.</p></div></div>'+(priorities||'<div class="empty">Nothing needs your attention right now.</div>')+
+  (intelSignals.length?'<div class="priority-footer"><button class="btn small" onclick="go(\'intelligence\')">View all '+intelSignals.length+' intelligence items →</button></div>':"")+'</div>'+
   '<div class="panel watch-panel"><div class="panel-head"><div><h2>What we are watching</h2><p class="muted">You do not need to manage these. Lucid Logic does.</p></div></div>'+programs+'</div></div>';
 }
 
