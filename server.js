@@ -13,7 +13,9 @@ await app.register(staticPlugin, { root: path.join(dir, "public"), prefix: "/" }
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 const AI_KEY = process.env.OPENAI_API_KEY || "";
 const AI_MODEL = process.env.OPENAI_MODEL || "gpt-5.6";
-const CRYPT_KEY = crypto.createHash("sha256").update(process.env.CONNECTOR_ENCRYPTION_KEY || process.env.RUN_SECRET || "lucid-intel-dev").digest();\nconst ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";\nconst RUN_SECRET = process.env.RUN_SECRET || "";
+const CRYPT_KEY = crypto.createHash("sha256").update(process.env.CONNECTOR_ENCRYPTION_KEY || process.env.RUN_SECRET || "lucid-intel-dev").digest();
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
+const RUN_SECRET = process.env.RUN_SECRET || "";
 
 const schema = [
 "create table if not exists intel_clients(id serial primary key,name text not null,website_url text,industry text,geography text,objective text,status text not null default 'active',profile jsonb not null default '{}'::jsonb,created_at timestamptz not null default now())",
