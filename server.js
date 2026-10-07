@@ -327,6 +327,12 @@ async function init(){
   for(const q of schema) await pool.query(q);
   const c=await pool.query("select count(*)::int n from intel_clients");
   if(c.rows[0].n===0) await seed();
+
+  // One-time cleanup of the original seeded example finding. Keep the demo client/programs,
+  // but never show fake intelligence, actions or opportunities as if they were real.
+  await pool.query("delete from intel_opportunities where source_url='https://example.com/rfp' or document_url='https://example.com/rfp' or title='Regional website modernization RFP identified'");
+  await pool.query("delete from intel_signals where source_url='https://example.com/rfp' or source_name='Demo source' or title='Regional website modernization RFP identified'");
+
   await pool.query("insert into intel_opportunities(signal_id,client_id,program_id,title,summary,source_name,source_url,document_url,opportunity_type,fit_score,recommendation) select s.id,s.client_id,s.program_id,s.title,s.what_changed,s.source_name,s.source_url,s.source_url,'rfp',least(100,greatest(0,s.confidence)),s.why_it_matters from intel_signals s join intel_programs p on p.id=s.program_id where p.program_type='opportunity' and not exists(select 1 from intel_opportunities o where o.signal_id=s.id)");
   await pool.query("delete from intel_client_sessions where expires_at<=now()");
 }
@@ -341,8 +347,6 @@ async function seed(){
     ["Account Intelligence","account","weekday","Detect trigger events that create a reason to contact accounts",["company news","leadership","funding","hiring","facilities"],["outreach","email_draft","alert"]]
   ];
   for(const p of ps) await pool.query("insert into intel_programs(client_id,name,program_type,cadence,objective,source_plan,action_plan) values($1,$2,$3,$4,$5,$6,$7)",[id,p[0],p[1],p[2],p[3],JSON.stringify(p[4]),JSON.stringify(p[5])]);
-  const s=await pool.query("insert into intel_signals(program_id,client_id,title,what_changed,why_it_matters,source_name,source_url,importance,confidence) values((select id from intel_programs where client_id=$1 and program_type='opportunity'),$1,$2,$3,$4,$5,$6,3,88) returning id",[id,"Regional website modernization RFP identified","A regional organization posted a website redesign and digital strategy opportunity with a multi-week response window.","It matches Lucid Logic capabilities and has enough lead time to qualify before spending proposal effort.","Demo source","https://example.com/rfp"]);
-  await pool.query("insert into intel_actions(signal_id,client_id,program_id,action_type,title,rationale,payload) values($1,$2,(select id from intel_programs where client_id=$2 and program_type='opportunity'),'proposal',$3,$4,$5)",[s.rows[0].id,id,"Generate first-pass proposal","Move a qualified opportunity directly from detection to pursuit readiness",JSON.stringify({deliverable:"Proposal starter",sections:["Executive summary","Need","Approach","Timeline","Relevant experience","Questions"]})]);
 }
 async function discover(client){
   const site=await crawl(client.website_url);
