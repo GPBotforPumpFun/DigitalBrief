@@ -30,7 +30,15 @@ const schema = [
 "create table if not exists intel_client_users(id serial primary key,client_id int not null references intel_clients(id) on delete cascade,email text not null unique,name text,password_hash text not null,active boolean not null default true,last_login_at timestamptz,created_at timestamptz not null default now())",
 "create table if not exists intel_client_sessions(id serial primary key,user_id int not null references intel_client_users(id) on delete cascade,token_hash text not null unique,expires_at timestamptz not null,created_at timestamptz not null default now())",
 "create index if not exists ix_opportunities_client_status on intel_opportunities(client_id,pursuit_status)",
-"create index if not exists ix_client_sessions_expiry on intel_client_sessions(expires_at)"
+"create index if not exists ix_client_sessions_expiry on intel_client_sessions(expires_at)",
+"alter table intel_programs add column if not exists client_visible boolean not null default true",
+"alter table intel_programs add column if not exists analyst_instructions text",
+"alter table intel_programs add column if not exists delivery_settings jsonb not null default '{}'::jsonb",
+"alter table intel_signals add column if not exists metadata jsonb not null default '{}'::jsonb",
+"alter table intel_signals add column if not exists client_visible boolean not null default true",
+"alter table intel_runs add column if not exists run_meta jsonb not null default '{}'::jsonb",
+"alter table intel_runs add column if not exists accepted_count int not null default 0",
+"alter table intel_runs add column if not exists rejected_count int not null default 0"
 ];
 
 function encrypt(obj){
@@ -135,17 +143,24 @@ async function getAIKey(){
   return dbKey||ENV_AI_KEY;
 }
 async function hasAIKey(){return Boolean(await getAIKey())}
-async function openai(prompt,useWeb){
+async function openaiDetailed(prompt,useWeb){
   const key=await getAIKey();
   if(!key) return null;
   const body={model:AI_MODEL,input:prompt,tools:useWeb?[{type:"web_search"}]:[]};
   const r=await fetch("https://api.openai.com/v1/responses",{method:"POST",headers:{Authorization:"Bearer "+key,"Content-Type":"application/json"},body:JSON.stringify(body)});
   if(!r.ok) throw new Error("OpenAI "+r.status+": "+(await r.text()).slice(0,300));
   const d=await r.json();
-  if(d.output_text) return d.output_text;
-  const out=[];
-  for(const o of d.output||[]) for(const c of o.content||[]) if(c.text) out.push(c.text);
-  return out.join("\n");
+  let text=d.output_text||"";
+  if(!text){
+    const out=[];
+    for(const o of d.output||[]) for(const c of o.content||[]) if(c.text) out.push(c.text);
+    text=out.join("\n");
+  }
+  return {text:text,usage:d.usage||{},model:d.model||AI_MODEL,response_id:d.id||null};
+}
+async function openai(prompt,useWeb){
+  const d=await openaiDetailed(prompt,useWeb);
+  return d?d.text:null;
 }
 async function crawl(url){
   let target=url||"";
@@ -210,29 +225,34 @@ async function discover(client){
   return blueprint;
 }
 async function runProgram(program,client){
-  const rr=await pool.query("insert into intel_runs(program_id,client_id) values($1,$2) returning id",[program.id,client.id]);
+  const rr=await pool.query("insert into intel_runs(program_id,client_id,run_meta) values($1,$2,$3) returning id",[program.id,client.id,JSON.stringify({source_plan:program.source_plan||[],action_plan:program.action_plan||[],cadence:program.cadence,model:AI_MODEL,program_type:program.program_type})]);
   const runId=rr.rows[0].id;
   if(!(await hasAIKey())){
     await pool.query("update intel_runs set status='needs_configuration',summary='Add the OpenAI API key in Settings to enable live research runs.',finished_at=now() where id=$1",[runId]);
     return {runId,status:"needs_configuration"};
   }
   try{
-    const prompt="Act as Lucid Logic's managed intelligence analyst. Research the public web for material developments relevant to this client and program.\nCLIENT: "+client.name+"; website "+(client.website_url||"")+"; industry "+(client.industry||"")+"; geography "+(client.geography||"")+"; objective "+(client.objective||"")+".\nPROGRAM: "+program.name+"; type "+program.program_type+"; objective "+program.objective+"; emphasize "+JSON.stringify(program.source_plan)+"; permitted actions "+JSON.stringify(program.action_plan)+".\nFind at most 6 genuinely material recent signals. Avoid routine news and duplicates. For opportunities assess fit, geography, estimated practical value, proposal deadline, Q&A deadline, source document and lead time. Every signal needs an action. Return ONLY JSON with summary and signals. Each signal must include title, what_changed, why_it_matters, source_name, source_url, signal_date, importance 1-3, confidence 0-100, actions with type,title,rationale,payload, and when program type is opportunity include opportunity with opportunity_type, fit_score 0-100, recommendation, deadline YYYY-MM-DD or null, qa_deadline YYYY-MM-DD or null, estimated_value, geography, requirements array, and document_url.";
-    const out=parseJson(await openai(prompt,true));
+    const prompt="Act as Lucid Logic's managed intelligence analyst. Research the public web for material developments relevant to this client and program.\nCLIENT: "+client.name+"; website "+(client.website_url||"")+"; industry "+(client.industry||"")+"; geography "+(client.geography||"")+"; objective "+(client.objective||"")+".\nPROGRAM: "+program.name+"; type "+program.program_type+"; objective "+program.objective+"; emphasize "+JSON.stringify(program.source_plan)+"; permitted actions "+JSON.stringify(program.action_plan)+".\nANALYST INSTRUCTIONS: "+(program.analyst_instructions||"Use sound judgment. Prefer material, actionable developments over volume.")+".\nFind at most 6 genuinely material recent signals. Reject routine news, duplicates, vague commentary and items with no clear business consequence. For every accepted signal explain what changed and why it matters. Every signal may recommend actions from the permitted action types. Return ONLY JSON with summary, rejected_count, rejected_notes (short array), and signals. Each signal must include title, what_changed, why_it_matters, source_name, source_url, signal_date, importance 1-3, confidence 0-100, metadata object, actions with type,title,rationale,payload. Metadata should preserve type-specific facts: competitor name/change type for competitor intelligence; account/company/trigger/contact clues for account intelligence; platform/metric/old_value/new_value/query for visibility intelligence; regulator/topic/effective_date for industry intelligence. For opportunities also include opportunity with opportunity_type, fit_score 0-100, recommendation, deadline YYYY-MM-DD or null, qa_deadline YYYY-MM-DD or null, estimated_value, geography, requirements array, and document_url.";
+    const response=await openaiDetailed(prompt,true);
+    const out=parseJson(response&&response.text);
     if(!out||!Array.isArray(out.signals)) throw new Error("Research response did not contain signals");
-    for(const s of out.signals.slice(0,6)){
-      const ins=await pool.query("insert into intel_signals(run_id,program_id,client_id,title,what_changed,why_it_matters,source_name,source_url,signal_date,importance,confidence) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) returning id",[runId,program.id,client.id,s.title,s.what_changed,s.why_it_matters,s.source_name,s.source_url,s.signal_date||null,s.importance||2,s.confidence||70]);
+    let accepted=0;
+    for(const item of out.signals.slice(0,6)){
+      const ins=await pool.query("insert into intel_signals(run_id,program_id,client_id,title,what_changed,why_it_matters,source_name,source_url,signal_date,importance,confidence,metadata,client_visible) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) returning id",[runId,program.id,client.id,item.title,item.what_changed,item.why_it_matters,item.source_name,item.source_url,item.signal_date||null,item.importance||2,item.confidence||70,JSON.stringify(item.metadata||{}),program.client_visible!==false]);
+      accepted++;
       if(program.program_type==="opportunity"){
-        const o=s.opportunity||{};
-        await pool.query("insert into intel_opportunities(signal_id,client_id,program_id,title,summary,source_name,source_url,document_url,opportunity_type,fit_score,recommendation,deadline,qa_deadline,estimated_value,geography,requirements) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) on conflict(signal_id) do update set title=excluded.title,summary=excluded.summary,source_name=excluded.source_name,source_url=excluded.source_url,document_url=excluded.document_url,opportunity_type=excluded.opportunity_type,fit_score=excluded.fit_score,recommendation=excluded.recommendation,deadline=excluded.deadline,qa_deadline=excluded.qa_deadline,estimated_value=excluded.estimated_value,geography=excluded.geography,requirements=excluded.requirements,updated_at=now()",[ins.rows[0].id,client.id,program.id,s.title,s.what_changed,s.source_name,s.source_url,o.document_url||s.source_url,o.opportunity_type||"rfp",o.fit_score||s.confidence||70,o.recommendation||s.why_it_matters,o.deadline||null,o.qa_deadline||null,o.estimated_value||null,o.geography||client.geography||null,JSON.stringify(o.requirements||[])]);
+        const o=item.opportunity||{};
+        await pool.query("insert into intel_opportunities(signal_id,client_id,program_id,title,summary,source_name,source_url,document_url,opportunity_type,fit_score,recommendation,deadline,qa_deadline,estimated_value,geography,requirements) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) on conflict(signal_id) do update set title=excluded.title,summary=excluded.summary,source_name=excluded.source_name,source_url=excluded.source_url,document_url=excluded.document_url,opportunity_type=excluded.opportunity_type,fit_score=excluded.fit_score,recommendation=excluded.recommendation,deadline=excluded.deadline,qa_deadline=excluded.qa_deadline,estimated_value=excluded.estimated_value,geography=excluded.geography,requirements=excluded.requirements,updated_at=now()",[ins.rows[0].id,client.id,program.id,item.title,item.what_changed,item.source_name,item.source_url,o.document_url||item.source_url,o.opportunity_type||"rfp",o.fit_score||item.confidence||70,o.recommendation||item.why_it_matters,o.deadline||null,o.qa_deadline||null,o.estimated_value||null,o.geography||client.geography||null,JSON.stringify(o.requirements||[])]);
       }
-      for(const a of s.actions||[]) await pool.query("insert into intel_actions(signal_id,client_id,program_id,action_type,title,rationale,payload) values($1,$2,$3,$4,$5,$6,$7)",[ins.rows[0].id,client.id,program.id,a.type,a.title,a.rationale||"",JSON.stringify(a.payload||{})]);
+      for(const a of item.actions||[]) await pool.query("insert into intel_actions(signal_id,client_id,program_id,action_type,title,rationale,payload) values($1,$2,$3,$4,$5,$6,$7)",[ins.rows[0].id,client.id,program.id,a.type,a.title,a.rationale||"",JSON.stringify(a.payload||{})]);
     }
+    const rejected=Math.max(0,Number(out.rejected_count||0));
+    const meta={source_plan:program.source_plan||[],action_plan:program.action_plan||[],cadence:program.cadence,model:(response&&response.model)||AI_MODEL,program_type:program.program_type,usage:(response&&response.usage)||{},response_id:(response&&response.response_id)||null,rejected_notes:Array.isArray(out.rejected_notes)?out.rejected_notes.slice(0,12):[]};
     await pool.query("update intel_programs set last_run_at=now() where id=$1",[program.id]);
-    await pool.query("update intel_runs set status='done',summary=$1,finished_at=now() where id=$2",[out.summary||"",runId]);
-    return {runId,status:"done",count:out.signals.length};
+    await pool.query("update intel_runs set status='done',summary=$1,accepted_count=$2,rejected_count=$3,run_meta=$4,finished_at=now() where id=$5",[out.summary||"",accepted,rejected,JSON.stringify(meta),runId]);
+    return {runId,status:"done",count:accepted,rejected:rejected};
   }catch(e){
-    await pool.query("update intel_runs set status='failed',summary=$1,finished_at=now() where id=$2",[String(e.message||e),runId]);
+    await pool.query("update intel_runs set status='failed',summary=$1,run_meta=run_meta||$2::jsonb,finished_at=now() where id=$3",[String(e.message||e),JSON.stringify({error:String(e.message||e)}),runId]);
     throw e;
   }
 }
@@ -316,10 +336,10 @@ app.get("/api/portal/dashboard",async function(req,reply){
   if(!u) return;
   const id=u.client_id;
   const all=await Promise.all([
-    pool.query("select s.*,p.name program_name from intel_signals s join intel_programs p on p.id=s.program_id where s.client_id=$1 order by s.created_at desc limit 80",[id]),
-    pool.query("select * from intel_opportunities where client_id=$1 order by case pursuit_status when 'pursue' then 0 when 'review' then 1 else 2 end,coalesce(deadline,'2999-12-31') asc,created_at desc",[id]),
-    pool.query("select a.*,s.title signal_title from intel_actions a left join intel_signals s on s.id=a.signal_id where a.client_id=$1 order by a.created_at desc limit 120",[id]),
-    pool.query("select id,name,program_type,cadence,objective,last_run_at from intel_programs where client_id=$1 and active=true order by name",[id])
+    pool.query("select s.*,p.name program_name,p.program_type from intel_signals s join intel_programs p on p.id=s.program_id where s.client_id=$1 and s.client_visible=true and p.client_visible=true order by s.created_at desc limit 100",[id]),
+    pool.query("select o.* from intel_opportunities o join intel_programs p on p.id=o.program_id where o.client_id=$1 and p.active=true and p.client_visible=true order by case o.pursuit_status when 'pursue' then 0 when 'review' then 1 else 2 end,coalesce(o.deadline,'2999-12-31') asc,o.created_at desc",[id]),
+    pool.query("select a.*,s.title signal_title from intel_actions a left join intel_signals s on s.id=a.signal_id left join intel_programs p on p.id=a.program_id where a.client_id=$1 and (p.id is null or p.client_visible=true) order by a.created_at desc limit 150",[id]),
+    pool.query("select id,name,program_type,cadence,objective,last_run_at from intel_programs where client_id=$1 and active=true and client_visible=true order by name",[id])
   ]);
   return {signals:all[0].rows,opportunities:all[1].rows,actions:all[2].rows,programs:all[3].rows};
 });
@@ -420,7 +440,33 @@ app.post("/api/opportunities/:id/status",async function(req,reply){
 app.post("/api/programs",async function(req,reply){
   const b=req.body||{};
   if(!b.client_id||!b.name||!b.objective) return reply.code(400).send({error:"client_id, name and objective required"});
-  const r=await pool.query("insert into intel_programs(client_id,name,program_type,cadence,objective,source_plan,action_plan) values($1,$2,$3,$4,$5,$6,$7) returning *",[b.client_id,b.name,b.program_type||"custom",b.cadence||"weekly",b.objective,JSON.stringify(b.source_plan||[]),JSON.stringify(b.action_plan||["alert"])]);
+  const r=await pool.query("insert into intel_programs(client_id,name,program_type,cadence,objective,source_plan,action_plan,client_visible,analyst_instructions,delivery_settings) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning *",[b.client_id,b.name,b.program_type||"custom",b.cadence||"weekly",b.objective,JSON.stringify(b.source_plan||[]),JSON.stringify(b.action_plan||["alert"]),b.client_visible!==false,b.analyst_instructions||null,JSON.stringify(b.delivery_settings||{})]);
+  return r.rows[0];
+});
+
+app.get("/api/programs/:id",async function(req,reply){
+  const id=Number(req.params.id);
+  const all=await Promise.all([
+    pool.query("select p.*,c.name client_name from intel_programs p join intel_clients c on c.id=p.client_id where p.id=$1",[id]),
+    pool.query("select * from intel_runs where program_id=$1 order by created_at desc limit 30",[id]),
+    pool.query("select * from intel_signals where program_id=$1 order by created_at desc limit 40",[id]),
+    pool.query("select * from intel_actions where program_id=$1 order by created_at desc limit 40",[id])
+  ]);
+  if(!all[0].rows[0]) return reply.code(404).send({error:"Program not found"});
+  return {program:all[0].rows[0],runs:all[1].rows,signals:all[2].rows,actions:all[3].rows};
+});
+app.patch("/api/programs/:id",async function(req,reply){
+  const id=Number(req.params.id),b=req.body||{};
+  const current=await pool.query("select * from intel_programs where id=$1",[id]);
+  if(!current.rows[0]) return reply.code(404).send({error:"Program not found"});
+  const p=current.rows[0];
+  const r=await pool.query("update intel_programs set name=$1,program_type=$2,cadence=$3,objective=$4,source_plan=$5,action_plan=$6,active=$7,client_visible=$8,analyst_instructions=$9,delivery_settings=$10 where id=$11 returning *",[
+    b.name??p.name,b.program_type??p.program_type,b.cadence??p.cadence,b.objective??p.objective,
+    JSON.stringify(b.source_plan??p.source_plan??[]),JSON.stringify(b.action_plan??p.action_plan??[]),
+    b.active===undefined?p.active:Boolean(b.active),b.client_visible===undefined?p.client_visible:Boolean(b.client_visible),
+    b.analyst_instructions===undefined?p.analyst_instructions:b.analyst_instructions,
+    JSON.stringify(b.delivery_settings??p.delivery_settings??{}),id
+  ]);
   return r.rows[0];
 });
 
