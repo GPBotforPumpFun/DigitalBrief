@@ -13,7 +13,7 @@ await app.register(staticPlugin, { root: path.join(dir, "public"), prefix: "/" }
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 const AI_KEY = process.env.OPENAI_API_KEY || "";
 const AI_MODEL = process.env.OPENAI_MODEL || "gpt-5.6";
-const CRYPT_KEY = crypto.createHash("sha256").update(process.env.CONNECTOR_ENCRYPTION_KEY || process.env.RUN_SECRET || "lucid-intel-dev").digest();
+const CRYPT_KEY = crypto.createHash("sha256").update(process.env.CONNECTOR_ENCRYPTION_KEY || process.env.RUN_SECRET || "lucid-intel-dev").digest();\nconst ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";\nconst RUN_SECRET = process.env.RUN_SECRET || "";
 
 const schema = [
 "create table if not exists intel_clients(id serial primary key,name text not null,website_url text,industry text,geography text,objective text,status text not null default 'active',profile jsonb not null default '{}'::jsonb,created_at timestamptz not null default now())",
@@ -37,6 +37,24 @@ function decrypt(value){
   d.setAuthTag(tag);
   return JSON.parse(Buffer.concat([d.update(data),d.final()]).toString("utf8"));
 }
+app.addHook("onRequest",async function(req,reply){
+  if(req.url==="/health") return;
+  if(req.url.startsWith("/api/run") && RUN_SECRET && req.headers["x-run-secret"]===RUN_SECRET) return;
+  if(!ADMIN_PASSWORD) return;
+  const auth=req.headers.authorization||"";
+  if(!auth.startsWith("Basic ")){
+    reply.header("WWW-Authenticate",'Basic realm="Lucid Logic Intelligence OS"');
+    return reply.code(401).send("Authentication required");
+  }
+  let decoded="";
+  try{decoded=Buffer.from(auth.slice(6),"base64").toString("utf8")}catch{}
+  const pass=decoded.includes(":")?decoded.slice(decoded.indexOf(":")+1):decoded;
+  if(pass!==ADMIN_PASSWORD){
+    reply.header("WWW-Authenticate",'Basic realm="Lucid Logic Intelligence OS"');
+    return reply.code(401).send("Authentication required");
+  }
+});
+
 function parseJson(text){
   if(!text) return null;
   let s=String(text).trim();
@@ -211,11 +229,29 @@ app.get("/api/clients/:id",async function(req,reply){
   if(!all[0].rows[0]) return reply.code(404).send({error:"Not found"});
   return {client:all[0].rows[0],programs:all[1].rows,signals:all[2].rows,actions:all[3].rows,connectors:all[4].rows};
 });
+app.post("/api/programs",async function(req,reply){
+  const b=req.body||{};
+  if(!b.client_id||!b.name||!b.objective) return reply.code(400).send({error:"client_id, name and objective required"});
+  const r=await pool.query("insert into intel_programs(client_id,name,program_type,cadence,objective,source_plan,action_plan) values($1,$2,$3,$4,$5,$6,$7) returning *",[b.client_id,b.name,b.program_type||"custom",b.cadence||"weekly",b.objective,JSON.stringify(b.source_plan||[]),JSON.stringify(b.action_plan||["alert"])]);
+  return r.rows[0];
+});
+
 app.post("/api/clients/:id/discover",async function(req,reply){
   const q=await pool.query("select * from intel_clients where id=$1",[Number(req.params.id)]);
   if(!q.rows[0]||!q.rows[0].website_url) return reply.code(400).send({error:"Client needs a website URL"});
   try{return await discover(q.rows[0])}catch(e){return reply.code(500).send({error:e.message})}
 });
+app.post("/api/run",async function(req,reply){
+  if(!RUN_SECRET || req.headers["x-run-secret"]!==RUN_SECRET) return reply.code(401).send({error:"unauthorized"});
+  const q=await pool.query("select p.*,c.name client_name,c.website_url,c.industry,c.geography,c.objective client_objective,c.profile from intel_programs p join intel_clients c on c.id=p.client_id where p.active=true and (p.last_run_at is null or (p.cadence in ('daily','weekday') and p.last_run_at < current_date) or (p.cadence='weekly' and p.last_run_at < now()-interval '6 days') or (p.cadence='monthly' and p.last_run_at < now()-interval '27 days')) order by p.id");
+  const results=[];
+  for(const p of q.rows){
+    const c={id:p.client_id,name:p.client_name,website_url:p.website_url,industry:p.industry,geography:p.geography,objective:p.client_objective,profile:p.profile};
+    try{results.push({programId:p.id,result:await runProgram(p,c)})}catch(e){results.push({programId:p.id,error:String(e.message||e)})}
+  }
+  return {ran:results.length,results:results};
+});
+
 app.post("/api/programs/:id/run",async function(req,reply){
   const q=await pool.query("select p.*,c.name client_name,c.website_url,c.industry,c.geography,c.objective client_objective,c.profile from intel_programs p join intel_clients c on c.id=p.client_id where p.id=$1",[Number(req.params.id)]);
   if(!q.rows[0]) return reply.code(404).send({error:"Not found"});
