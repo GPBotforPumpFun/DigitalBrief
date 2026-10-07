@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Managed Intelligence Client Portal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/portal.css">
+</head>
+<body>
+<div id="loginScreen" class="login-screen hidden">
+  <div class="login-card">
+    <div class="portal-mark">LL</div>
+    <p class="eyebrow">LUCID LOGIC</p>
+    <h1>Managed Intelligence</h1>
+    <p class="muted">Sign in to your company's intelligence workspace.</p>
+    <form id="loginForm">
+      <label>Email</label>
+      <input id="loginEmail" type="email" required autocomplete="username">
+      <label>Password</label>
+      <input id="loginPassword" type="password" required autocomplete="current-password">
+      <button type="submit" class="btn gold">Sign in</button>
+    </form>
+    <div id="loginError" class="login-error"></div>
+  </div>
+</div>
+
+<div id="portalApp" class="portal-shell hidden">
+  <aside class="sidebar">
+    <div class="brand"><div class="mark">LL</div><div><strong>LUCID LOGIC</strong><span>MANAGED INTELLIGENCE</span></div></div>
+    <div class="client-name" id="clientName">Client</div>
+    <nav>
+      <button class="nav active" data-view="overview">⌂ <span>Overview</span></button>
+      <button class="nav" data-view="opportunities">◆ <span>Opportunities</span></button>
+      <button class="nav" data-view="signals">◉ <span>Signals</span></button>
+      <button class="nav" data-view="actions">✓ <span>Actions</span></button>
+      <button class="nav" data-view="documents">▤ <span>Work Product</span></button>
+    </nav>
+    <div class="sidebar-bottom">
+      <div id="userName" class="user-name"></div>
+      <button id="logoutBtn" class="logout">Sign out</button>
+    </div>
+  </aside>
+  <main>
+    <header class="topbar">
+      <div><p class="eyebrow">YOUR INTELLIGENCE WORKSPACE</p><h1 id="pageTitle">Overview</h1></div>
+      <div class="managed-badge">Managed by Lucid Logic</div>
+    </header>
+    <section id="view"></section>
+  </main>
+</div>
+<div id="toast"></div>
+<script type="module" src="/portal.js"></script>
+</body>
+</html>
