@@ -38,7 +38,7 @@ function intelligenceMeta(meta){
 }
 function signalCard(s){
   const importance=s.importance>=3?"priority":"standard";
-  return '<article class="intel-item '+importance+'">'+
+  return '<article id="signal-'+s.id+'" class="intel-item '+importance+'">'+
     '<div class="intel-rail"><span></span></div>'+
     '<div class="intel-body"><div class="row"><div><div class="intel-kicker">'+esc(s.program_name||"Intelligence")+'</div><h3>'+esc(s.title)+'</h3></div><span class="confidence">'+esc(s.confidence||70)+'% confidence</span></div>'+
     '<div class="intel-section"><span>WHAT CHANGED</span><p>'+esc(s.what_changed)+'</p></div>'+
@@ -53,7 +53,7 @@ function actionCard(a){
   const body=p.body||p.content||"";
   const note=p.notes||"";
   const pending=a.status==="proposed";
-  return '<article class="action-card '+(pending?"needs-action":"done-action")+'">'+
+  return '<article id="action-'+a.id+'" class="action-card '+(pending?"needs-action":"done-action")+'">'+
     '<div class="action-icon">'+esc(info.icon)+'</div>'+
     '<div class="action-main"><div class="row"><div><div class="action-type">'+esc(info.label)+'</div><h3>'+esc(a.title)+'</h3></div><span class="status '+esc(a.status)+'">'+esc(nice(a.status))+'</span></div>'+
     '<p class="action-desc">'+esc(a.rationale||info.desc)+'</p>'+
@@ -68,7 +68,7 @@ function opportunityCard(o){
   const due=o.deadline?new Date(o.deadline+"T12:00:00").toLocaleDateString():"Not found";
   const qaDue=o.qa_deadline?new Date(o.qa_deadline+"T12:00:00").toLocaleDateString():"Not found";
   const reqs=Array.isArray(o.requirements)&&o.requirements.length?'<div class="opp-req"><b>Key requirements</b><ul>'+o.requirements.slice(0,8).map(r=>'<li>'+esc(typeof r==="string"?r:JSON.stringify(r))+'</li>').join("")+'</ul></div>':"";
-  return '<article class="opportunity-card"><div class="row"><div><div class="meta"><span>'+esc(nice(o.opportunity_type||"opportunity"))+'</span><span>•</span><span>'+esc(nice(o.pursuit_status))+'</span></div><h3>'+esc(o.title)+'</h3></div><div class="fit-score"><strong>'+esc(o.fit_score||0)+'</strong><span>FIT</span></div></div>'+
+  return '<article id="opp-'+o.id+'" class="opportunity-card"><div class="row"><div><div class="meta"><span>'+esc(nice(o.opportunity_type||"opportunity"))+'</span><span>•</span><span>'+esc(nice(o.pursuit_status))+'</span></div><h3>'+esc(o.title)+'</h3></div><div class="fit-score"><strong>'+esc(o.fit_score||0)+'</strong><span>FIT</span></div></div>'+
   '<p>'+esc(o.summary||"")+'</p><div class="opp-meta"><div><span>Proposal due</span><b>'+esc(due)+'</b></div><div><span>Q&A due</span><b>'+esc(qaDue)+'</b></div><div><span>Est. value</span><b>'+esc(o.estimated_value||"Unknown")+'</b></div><div><span>Geography</span><b>'+esc(o.geography||"Unknown")+'</b></div></div>'+
   (o.recommendation?'<div class="why"><b>Lucid Logic recommendation:</b> '+esc(o.recommendation)+'</div>':'')+reqs+
   '<div class="actions">'+(source?'<a class="btn small" target="_blank" href="'+esc(source)+'">View RFP / source ↗</a>':'')+
@@ -162,15 +162,48 @@ function render(){
 window.go=v=>{state.view=v;render()};
 qa(".nav").forEach(n=>n.onclick=()=>go(n.dataset.view));
 
+function urlIntent(){
+  const p=new URLSearchParams(location.search);
+  return {magic:p.get("magic")||"",view:p.get("view")||"",action:p.get("action")||"",opp:p.get("opp")||"",signal:p.get("signal")||""};
+}
+function applyUrlIntent(){
+  const intent=urlIntent();
+  if(intent.view&&views[intent.view]) state.view=intent.view;
+  render();
+  const target=intent.action?("action-"+intent.action):intent.opp?("opp-"+intent.opp):intent.signal?("signal-"+intent.signal):"";
+  if(target){
+    setTimeout(function(){
+      const el=document.getElementById(target);
+      if(el){el.classList.add("deep-target");el.scrollIntoView({behavior:"smooth",block:"center"})}
+    },80);
+  }
+}
+async function redeemMagicLink(){
+  const intent=urlIntent();
+  if(!intent.magic) return false;
+  try{
+    await api("/api/portal/magic-login",{method:"POST",body:JSON.stringify({token:intent.magic})});
+    const p=new URLSearchParams(location.search);
+    p.delete("magic");
+    history.replaceState(null,"",location.pathname+(p.toString()?"?"+p.toString():""));
+    return true;
+  }catch(e){
+    showLogin(e.message);
+    return false;
+  }
+}
+
 async function start(){
   try{
+    const intent=urlIntent();
+    if(intent.magic) await redeemMagicLink();
     state.me=await api("/api/portal/me");
     state.data=await api("/api/portal/dashboard");
     q("#clientName").textContent=state.me.client.name;
     q("#userName").textContent=state.me.user.name||state.me.user.email;
     q("#loginScreen").classList.add("hidden");
     q("#portalApp").classList.remove("hidden");
-    render();
+    applyUrlIntent();
   }catch(e){
     if(e.status===401){showLogin();return}
     showLogin(e.message);
