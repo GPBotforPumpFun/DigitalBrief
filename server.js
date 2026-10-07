@@ -17,6 +17,9 @@ const CRYPT_KEY = crypto.createHash("sha256").update(process.env.CONNECTOR_ENCRY
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
 const RUN_SECRET = process.env.RUN_SECRET || "";
 const SETTINGS_CODE = process.env.SETTINGS_CODE || "";
+const APP_URL = (process.env.APP_URL || process.env.RAILWAY_STATIC_URL || "").replace(/\/$/,"");
+const ENV_RESEND_KEY = process.env.RESEND_API_KEY || "";
+const ENV_EMAIL_FROM = process.env.EMAIL_FROM || "";
 
 const schema = [
 "create table if not exists intel_clients(id serial primary key,name text not null,website_url text,industry text,geography text,objective text,status text not null default 'active',profile jsonb not null default '{}'::jsonb,created_at timestamptz not null default now())",
@@ -38,7 +41,11 @@ const schema = [
 "alter table intel_signals add column if not exists client_visible boolean not null default true",
 "alter table intel_runs add column if not exists run_meta jsonb not null default '{}'::jsonb",
 "alter table intel_runs add column if not exists accepted_count int not null default 0",
-"alter table intel_runs add column if not exists rejected_count int not null default 0"
+"alter table intel_runs add column if not exists rejected_count int not null default 0",
+"create table if not exists intel_delivery_settings(client_id int primary key references intel_clients(id) on delete cascade,brief_enabled boolean not null default true,urgent_enabled boolean not null default true,updated_at timestamptz not null default now())",
+"create table if not exists intel_brief_deliveries(id serial primary key,client_id int not null references intel_clients(id) on delete cascade,user_id int not null references intel_client_users(id) on delete cascade,status text not null,provider_message_id text,error text,new_signal_count int not null default 0,open_action_count int not null default 0,open_opportunity_count int not null default 0,sent_at timestamptz not null default now())",
+"create table if not exists intel_alert_deliveries(id serial primary key,signal_id int not null references intel_signals(id) on delete cascade,user_id int not null references intel_client_users(id) on delete cascade,status text not null,provider_message_id text,error text,sent_at timestamptz not null default now(),unique(signal_id,user_id))",
+"create index if not exists ix_brief_deliveries_user_sent on intel_brief_deliveries(user_id,sent_at desc)"
 ];
 
 function encrypt(obj){
@@ -105,7 +112,7 @@ async function requirePortalUser(req,reply){
 
 app.addHook("onRequest",async function(req,reply){
   if(req.url==="/health") return;
-  if(req.url.startsWith("/api/run") && RUN_SECRET && req.headers["x-run-secret"]===RUN_SECRET) return;
+  if((req.url.startsWith("/api/run")||req.url.startsWith("/api/briefs/")) && RUN_SECRET && req.headers["x-run-secret"]===RUN_SECRET) return;
   if(req.url.startsWith("/api/portal/")) return;
   if(req.url==="/api/admin/login"||req.url==="/api/admin/logout") return;
   if(req.url.startsWith("/api/")&&!isAdmin(req)) return reply.code(401).send({error:"admin_auth_required"});
@@ -143,6 +150,147 @@ async function getAIKey(){
   return dbKey||ENV_AI_KEY;
 }
 async function hasAIKey(){return Boolean(await getAIKey())}
+async function getEmailConfig(){
+  const dbKey=await getSetting("resend_api_key");
+  const dbFrom=await getSetting("email_from");
+  return {key:dbKey||ENV_RESEND_KEY,from:dbFrom||ENV_EMAIL_FROM};
+}
+async function sendEmail(to,subject,html,textBody){
+  const cfg=await getEmailConfig();
+  if(!cfg.key) throw new Error("Email delivery is not configured");
+  if(!cfg.from) throw new Error("Email From address is not configured");
+  const r=await fetch("https://api.resend.com/emails",{method:"POST",headers:{Authorization:"Bearer "+cfg.key,"Content-Type":"application/json"},body:JSON.stringify({from:cfg.from,to:[to],subject:subject,html:html,text:textBody})});
+  const body=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(body.message||("Email provider returned "+r.status));
+  return body;
+}
+function htmlEsc(v){return String(v==null?"":v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+function makeMagicToken(userId,clientId){
+  const payload=Buffer.from(JSON.stringify({u:Number(userId),c:Number(clientId),exp:Date.now()+72*3600000})).toString("base64url");
+  const sig=crypto.createHmac("sha256",RUN_SECRET||SETTINGS_CODE||"lucid-magic").update(payload).digest("base64url");
+  return payload+"."+sig;
+}
+function verifyMagicToken(token){
+  try{
+    const [payload,sig]=String(token||"").split(".");
+    if(!payload||!sig) return null;
+    const expected=crypto.createHmac("sha256",RUN_SECRET||SETTINGS_CODE||"lucid-magic").update(payload).digest("base64url");
+    if(sig.length!==expected.length||!crypto.timingSafeEqual(Buffer.from(sig),Buffer.from(expected))) return null;
+    const data=JSON.parse(Buffer.from(payload,"base64url").toString("utf8"));
+    if(!data.exp||Date.now()>Number(data.exp)) return null;
+    return data;
+  }catch{return null}
+}
+function deepLink(user,view,itemType,itemId){
+  const magic=makeMagicToken(user.id,user.client_id);
+  const qs=new URLSearchParams({magic:magic,view:view});
+  if(itemType&&itemId) qs.set(itemType,String(itemId));
+  return (APP_URL||"")+"/portal?"+qs.toString();
+}
+async function deliverySettings(clientId){
+  const q=await pool.query("select brief_enabled,urgent_enabled from intel_delivery_settings where client_id=$1",[clientId]);
+  return q.rows[0]||{brief_enabled:true,urgent_enabled:true};
+}
+async function briefDataForUser(user){
+  const last=await pool.query("select sent_at from intel_brief_deliveries where user_id=$1 and status='sent' order by sent_at desc limit 1",[user.id]);
+  const since=last.rows[0]?.sent_at||new Date(Date.now()-24*3600000);
+  const all=await Promise.all([
+    pool.query("select s.*,p.name program_name,p.program_type from intel_signals s join intel_programs p on p.id=s.program_id where s.client_id=$1 and s.client_visible=true and p.client_visible=true and p.program_type<>'opportunity' and s.created_at>$2 order by s.importance desc,s.created_at desc limit 12",[user.client_id,since]),
+    pool.query("select a.*,p.name program_name from intel_actions a left join intel_programs p on p.id=a.program_id where a.client_id=$1 and a.status='proposed' and (p.id is null or p.client_visible=true) order by a.created_at asc limit 12",[user.client_id]),
+    pool.query("select o.* from intel_opportunities o join intel_programs p on p.id=o.program_id where o.client_id=$1 and p.client_visible=true and p.active=true and o.pursuit_status='review' order by coalesce(o.deadline,'2999-12-31') asc,o.created_at desc limit 8",[user.client_id])
+  ]);
+  return {signals:all[0].rows,actions:all[1].rows,opportunities:all[2].rows,since:since};
+}
+function briefHtml(user,client,data){
+  const attention=[];
+  for(const a of data.actions){
+    attention.push('<div style="border:1px solid #e5e7eb;border-left:4px solid #f3b51b;border-radius:10px;padding:14px;margin:10px 0"><div style="font-size:11px;font-weight:800;color:#8a6500;letter-spacing:.05em">ACTION NEEDED</div><div style="font-size:16px;font-weight:700;margin:4px 0">'+htmlEsc(a.title)+'</div><div style="font-size:13px;color:#616773;margin-bottom:10px">'+htmlEsc(a.rationale||"Lucid Logic has prepared an action for your review.")+'</div><a href="'+htmlEsc(deepLink(user,"actions","action",a.id))+'" style="display:inline-block;background:#111827;color:#fff;text-decoration:none;padding:9px 13px;border-radius:7px;font-size:12px;font-weight:700">Review action</a></div>');
+  }
+  for(const o of data.opportunities){
+    const due=o.deadline?new Date(o.deadline+"T12:00:00").toLocaleDateString():"Deadline not confirmed";
+    attention.push('<div style="border:1px solid #e5e7eb;border-left:4px solid #f3b51b;border-radius:10px;padding:14px;margin:10px 0"><div style="font-size:11px;font-weight:800;color:#8a6500;letter-spacing:.05em">OPPORTUNITY TO REVIEW</div><div style="font-size:16px;font-weight:700;margin:4px 0">'+htmlEsc(o.title)+'</div><div style="font-size:13px;color:#616773;margin-bottom:4px">'+htmlEsc(o.summary||"")+'</div><div style="font-size:12px;color:#7b818c;margin-bottom:10px">Fit: '+htmlEsc(o.fit_score||0)+'/100 · '+htmlEsc(due)+'</div><a href="'+htmlEsc(deepLink(user,"opportunities","opp",o.id))+'" style="display:inline-block;background:#111827;color:#fff;text-decoration:none;padding:9px 13px;border-radius:7px;font-size:12px;font-weight:700">Review opportunity</a></div>');
+  }
+  const intel=data.signals.map(sig=>'<div style="padding:14px 0;border-top:1px solid #eceff3"><div style="font-size:11px;color:#7c8490;font-weight:700">'+htmlEsc(sig.program_name||"Intelligence")+'</div><div style="font-size:16px;font-weight:700;margin:4px 0">'+htmlEsc(sig.title)+'</div><div style="font-size:13px;line-height:1.5;color:#313640">'+htmlEsc(sig.what_changed)+'</div><div style="font-size:13px;line-height:1.5;background:#fffaf0;border-left:3px solid #f3b51b;padding:9px 10px;margin-top:8px"><b>Why it matters:</b> '+htmlEsc(sig.why_it_matters)+'</div><div style="margin-top:9px"><a href="'+htmlEsc(deepLink(user,"intelligence","signal",sig.id))+'" style="font-size:12px;font-weight:700;color:#315bcc;text-decoration:none">View in portal →</a></div></div>').join("");
+  const nothing=!attention.length&&!intel;
+  return '<!doctype html><html><body style="margin:0;background:#f4f5f7;font-family:Arial,sans-serif;color:#111827"><div style="max-width:720px;margin:auto;padding:24px"><div style="background:#11151d;color:#fff;border-radius:14px;padding:22px 24px"><div style="font-size:11px;color:#f3b51b;font-weight:800;letter-spacing:.08em">LUCID LOGIC MANAGED INTELLIGENCE</div><div style="font-size:26px;font-weight:800;margin-top:5px">'+htmlEsc(client.name)+'</div><div style="font-size:13px;color:#c5cad2;margin-top:5px">Daily Intelligence Brief</div></div><div style="background:#fff;border-radius:14px;padding:22px 24px;margin-top:12px">'+
+    (attention.length?'<div style="font-size:18px;font-weight:800">Needs your attention</div><div style="font-size:13px;color:#68707c;margin:4px 0 10px">These items need a decision or review.</div>'+attention.join(""):"")+
+    (intel?'<div style="font-size:18px;font-weight:800;margin-top:'+(attention.length?24:0)+'px">New intelligence</div><div style="font-size:13px;color:#68707c;margin:4px 0 8px">What changed since your last brief, and why it matters.</div>'+intel:"")+
+    (nothing?'<div style="padding:20px 0"><div style="font-size:18px;font-weight:800">Nothing material today.</div><div style="font-size:13px;color:#68707c;margin-top:6px">We are still monitoring. There are no new material changes or outstanding decisions for you right now.</div></div>':"")+
+    '<div style="border-top:1px solid #eceff3;margin-top:20px;padding-top:15px;font-size:12px;color:#7d8590">Read in email. Act in the portal. <a href="'+htmlEsc(deepLink(user,"overview"))+'" style="color:#315bcc;font-weight:700;text-decoration:none">Open your workspace →</a></div></div></div></body></html>';
+}
+function briefText(user,client,data){
+  const lines=["LUCID LOGIC MANAGED INTELLIGENCE",client.name,"Daily Intelligence Brief",""];
+  if(data.actions.length||data.opportunities.length){
+    lines.push("NEEDS YOUR ATTENTION");
+    for(const a of data.actions) lines.push("ACTION: "+a.title+"\n"+deepLink(user,"actions","action",a.id));
+    for(const o of data.opportunities) lines.push("OPPORTUNITY: "+o.title+"\n"+deepLink(user,"opportunities","opp",o.id));
+    lines.push("");
+  }
+  if(data.signals.length){
+    lines.push("NEW INTELLIGENCE");
+    for(const sig of data.signals) lines.push(sig.title+"\n"+sig.what_changed+"\nWhy it matters: "+sig.why_it_matters+"\n"+deepLink(user,"intelligence","signal",sig.id)+"\n");
+  }
+  if(!data.actions.length&&!data.opportunities.length&&!data.signals.length) lines.push("Nothing material today. We are still monitoring.");
+  lines.push("","Read in email. Act in the portal.","Open workspace: "+deepLink(user,"overview"));
+  return lines.join("\n");
+}
+async function sendDailyBriefs(onlyClientId=null){
+  const cfg=await getEmailConfig();
+  if(!cfg.key||!cfg.from) return {sent:0,skipped:true,reason:"email_not_configured"};
+  const args=[],where=["u.active=true","c.status='active'"];
+  if(onlyClientId){args.push(Number(onlyClientId));where.push("u.client_id=$"+args.length)}
+  const q=await pool.query("select u.id,u.client_id,u.email,u.name,c.name client_name from intel_client_users u join intel_clients c on c.id=u.client_id left join intel_delivery_settings d on d.client_id=c.id where "+where.join(" and ")+" and coalesce(d.brief_enabled,true)=true order by u.client_id,u.id",args);
+  const results=[];
+  for(const user of q.rows){
+    const data=await briefDataForUser(user);
+    const client={id:user.client_id,name:user.client_name};
+    const attention=data.actions.length+data.opportunities.length;
+    const subject=(attention?attention+" item"+(attention===1?"":"s")+" need your attention | ":"")+client.name+" Daily Intelligence Brief";
+    try{
+      const sent=await sendEmail(user.email,subject,briefHtml(user,client,data),briefText(user,client,data));
+      await pool.query("insert into intel_brief_deliveries(client_id,user_id,status,provider_message_id,new_signal_count,open_action_count,open_opportunity_count) values($1,$2,'sent',$3,$4,$5,$6)",[user.client_id,user.id,sent.id||null,data.signals.length,data.actions.length,data.opportunities.length]);
+      results.push({userId:user.id,email:user.email,status:"sent"});
+    }catch(e){
+      await pool.query("insert into intel_brief_deliveries(client_id,user_id,status,error,new_signal_count,open_action_count,open_opportunity_count) values($1,$2,'failed',$3,$4,$5,$6)",[user.client_id,user.id,String(e.message||e),data.signals.length,data.actions.length,data.opportunities.length]);
+      results.push({userId:user.id,email:user.email,status:"failed",error:String(e.message||e)});
+    }
+  }
+  return {sent:results.filter(x=>x.status==="sent").length,failed:results.filter(x=>x.status==="failed").length,results:results};
+}
+async function sendUrgentAlertsForRun(runId,clientId){
+  const cfg=await getEmailConfig();
+  if(!cfg.key||!cfg.from) return {sent:0,skipped:true};
+  const ds=await deliverySettings(clientId);
+  if(!ds.urgent_enabled) return {sent:0,skipped:true};
+  const signals=await pool.query("select s.*,p.name program_name,p.program_type from intel_signals s join intel_programs p on p.id=s.program_id where s.run_id=$1 and s.client_id=$2 and s.client_visible=true and p.client_visible=true and s.importance>=3",[runId,clientId]);
+  if(!signals.rows.length) return {sent:0};
+  const users=await pool.query("select u.id,u.client_id,u.email,u.name,c.name client_name from intel_client_users u join intel_clients c on c.id=u.client_id where u.client_id=$1 and u.active=true",[clientId]);
+  let sentCount=0;
+  for(const sig of signals.rows){
+    for(const user of users.rows){
+      const prior=await pool.query("select 1 from intel_alert_deliveries where signal_id=$1 and user_id=$2",[sig.id,user.id]);
+      if(prior.rows[0]) continue;
+      const view=sig.program_type==="opportunity"?"opportunities":"intelligence";
+      let itemType=sig.program_type==="opportunity"?"opp":"signal",itemId=sig.id;
+      if(sig.program_type==="opportunity"){
+        const oq=await pool.query("select id from intel_opportunities where signal_id=$1",[sig.id]);
+        if(oq.rows[0]) itemId=oq.rows[0].id;
+      }
+      const link=deepLink(user,view,itemType,itemId);
+      const subject="Actionable intelligence | "+user.client_name+" | "+sig.title;
+      const html='<div style="font-family:Arial,sans-serif;max-width:650px;margin:auto"><div style="font-size:11px;color:#8a6500;font-weight:800">LUCID LOGIC · ACTIONABLE INTELLIGENCE</div><h2>'+htmlEsc(sig.title)+'</h2><p>'+htmlEsc(sig.what_changed)+'</p><div style="border-left:3px solid #f3b51b;background:#fffaf0;padding:10px 12px"><b>Why it matters:</b> '+htmlEsc(sig.why_it_matters)+'</div><p><a href="'+htmlEsc(link)+'" style="display:inline-block;background:#111827;color:#fff;text-decoration:none;padding:10px 14px;border-radius:7px;font-weight:700">Review now</a></p></div>';
+      try{
+        const sent=await sendEmail(user.email,subject,html,sig.title+"\n\n"+sig.what_changed+"\n\nWhy it matters: "+sig.why_it_matters+"\n\nReview: "+link);
+        await pool.query("insert into intel_alert_deliveries(signal_id,user_id,status,provider_message_id) values($1,$2,'sent',$3)",[sig.id,user.id,sent.id||null]);
+        sentCount++;
+      }catch(e){
+        await pool.query("insert into intel_alert_deliveries(signal_id,user_id,status,error) values($1,$2,'failed',$3) on conflict(signal_id,user_id) do update set status='failed',error=excluded.error,sent_at=now()",[sig.id,user.id,String(e.message||e)]);
+      }
+    }
+  }
+  return {sent:sentCount};
+}
+
 async function openaiDetailed(prompt,useWeb){
   const key=await getAIKey();
   if(!key) return null;
@@ -224,7 +372,7 @@ async function discover(client){
   await pool.query("update intel_clients set profile=$1 where id=$2",[JSON.stringify(blueprint),client.id]);
   return blueprint;
 }
-async function runProgram(program,client){
+async function runProgram(program,client,options={}){
   const rr=await pool.query("insert into intel_runs(program_id,client_id,run_meta) values($1,$2,$3) returning id",[program.id,client.id,JSON.stringify({source_plan:program.source_plan||[],action_plan:program.action_plan||[],cadence:program.cadence,model:AI_MODEL,program_type:program.program_type})]);
   const runId=rr.rows[0].id;
   if(!(await hasAIKey())){
@@ -250,6 +398,7 @@ async function runProgram(program,client){
     const meta={source_plan:program.source_plan||[],action_plan:program.action_plan||[],cadence:program.cadence,model:(response&&response.model)||AI_MODEL,program_type:program.program_type,usage:(response&&response.usage)||{},response_id:(response&&response.response_id)||null,rejected_notes:Array.isArray(out.rejected_notes)?out.rejected_notes.slice(0,12):[]};
     await pool.query("update intel_programs set last_run_at=now() where id=$1",[program.id]);
     await pool.query("update intel_runs set status='done',summary=$1,accepted_count=$2,rejected_count=$3,run_meta=$4,finished_at=now() where id=$5",[out.summary||"",accepted,rejected,JSON.stringify(meta),runId]);
+    if(!options.suppressUrgent){try{await sendUrgentAlertsForRun(runId,client.id)}catch{}}
     return {runId,status:"done",count:accepted,rejected:rejected};
   }catch(e){
     await pool.query("update intel_runs set status='failed',summary=$1,run_meta=run_meta||$2::jsonb,finished_at=now() where id=$3",[String(e.message||e),JSON.stringify({error:String(e.message||e)}),runId]);
@@ -324,6 +473,18 @@ app.post("/api/portal/logout",async function(req,reply){
     await pool.query("delete from intel_client_sessions where token_hash=$1",[tokenHash]);
   }
   clearHttpCookie(reply,"intel_session");
+  return {ok:true};
+});
+app.post("/api/portal/magic-login",async function(req,reply){
+  const data=verifyMagicToken((req.body||{}).token);
+  if(!data) return reply.code(401).send({error:"This secure link is invalid or has expired"});
+  const q=await pool.query("select id,client_id from intel_client_users where id=$1 and client_id=$2 and active=true",[Number(data.u),Number(data.c)]);
+  if(!q.rows[0]) return reply.code(401).send({error:"This secure link is no longer valid"});
+  const token=crypto.randomBytes(32).toString("hex");
+  const tokenHash=crypto.createHash("sha256").update(token).digest("hex");
+  await pool.query("insert into intel_client_sessions(user_id,token_hash,expires_at) values($1,$2,now()+interval '7 days')",[q.rows[0].id,tokenHash]);
+  await pool.query("update intel_client_users set last_login_at=now() where id=$1",[q.rows[0].id]);
+  setHttpCookie(reply,"intel_session",token,604800);
   return {ok:true};
 });
 app.get("/api/portal/me",async function(req,reply){
@@ -408,10 +569,12 @@ app.get("/api/clients/:id",async function(req,reply){
     pool.query("select * from intel_actions where client_id=$1 order by created_at desc limit 120",[id]),
     pool.query("select id,client_id,connector_type,name,status,created_at from intel_connectors where client_id=$1 order by created_at",[id]),
     pool.query("select * from intel_opportunities where client_id=$1 order by coalesce(deadline,'2999-12-31') asc,created_at desc",[id]),
-    pool.query("select id,client_id,email,name,active,last_login_at,created_at from intel_client_users where client_id=$1 order by email",[id])
+    pool.query("select id,client_id,email,name,active,last_login_at,created_at from intel_client_users where client_id=$1 order by email",[id]),
+    pool.query("select brief_enabled,urgent_enabled,updated_at from intel_delivery_settings where client_id=$1",[id]),
+    pool.query("select status,sent_at,new_signal_count,open_action_count,open_opportunity_count,error from intel_brief_deliveries where client_id=$1 order by sent_at desc limit 8",[id])
   ]);
   if(!all[0].rows[0]) return reply.code(404).send({error:"Not found"});
-  return {client:all[0].rows[0],programs:all[1].rows,signals:all[2].rows,actions:all[3].rows,connectors:all[4].rows,opportunities:all[5].rows,portalUsers:all[6].rows};
+  return {client:all[0].rows[0],programs:all[1].rows,signals:all[2].rows,actions:all[3].rows,connectors:all[4].rows,opportunities:all[5].rows,portalUsers:all[6].rows,delivery:all[7].rows[0]||{brief_enabled:true,urgent_enabled:true},briefHistory:all[8].rows};
 });
 app.post("/api/clients/:id/portal-users",async function(req,reply){
   const clientId=Number(req.params.id);
@@ -428,6 +591,15 @@ app.post("/api/clients/:id/portal-users",async function(req,reply){
   if(exists.rows[0]) r=await pool.query("update intel_client_users set name=$1,password_hash=$2,active=true where id=$3 returning id,client_id,email,name,active,last_login_at,created_at",[name||null,passHash,exists.rows[0].id]);
   else r=await pool.query("insert into intel_client_users(client_id,email,name,password_hash) values($1,$2,$3,$4) returning id,client_id,email,name,active,last_login_at,created_at",[clientId,email,name||null,passHash]);
   return r.rows[0];
+});
+app.patch("/api/clients/:id/delivery",async function(req,reply){
+  const id=Number(req.params.id),b=req.body||{};
+  const brief=b.brief_enabled!==false,urgent=b.urgent_enabled!==false;
+  const r=await pool.query("insert into intel_delivery_settings(client_id,brief_enabled,urgent_enabled,updated_at) values($1,$2,$3,now()) on conflict(client_id) do update set brief_enabled=excluded.brief_enabled,urgent_enabled=excluded.urgent_enabled,updated_at=now() returning *",[id,brief,urgent]);
+  return r.rows[0];
+});
+app.post("/api/clients/:id/send-brief",async function(req,reply){
+  try{return await sendDailyBriefs(Number(req.params.id))}catch(e){return reply.code(500).send({error:e.message})}
 });
 app.post("/api/opportunities/:id/status",async function(req,reply){
   const status=String((req.body||{}).status||"");
@@ -475,13 +647,18 @@ app.post("/api/clients/:id/discover",async function(req,reply){
   if(!q.rows[0]||!q.rows[0].website_url) return reply.code(400).send({error:"Client needs a website URL"});
   try{return await discover(q.rows[0])}catch(e){return reply.code(500).send({error:e.message})}
 });
+app.post("/api/briefs/send",async function(req,reply){
+  if(!RUN_SECRET || req.headers["x-run-secret"]!==RUN_SECRET) return reply.code(401).send({error:"unauthorized"});
+  try{return await sendDailyBriefs()}catch(e){return reply.code(500).send({error:e.message})}
+});
+
 app.post("/api/run",async function(req,reply){
   if(!RUN_SECRET || req.headers["x-run-secret"]!==RUN_SECRET) return reply.code(401).send({error:"unauthorized"});
   const q=await pool.query("select p.*,c.name client_name,c.website_url,c.industry,c.geography,c.objective client_objective,c.profile from intel_programs p join intel_clients c on c.id=p.client_id where p.active=true and (p.last_run_at is null or (p.cadence in ('daily','weekday') and p.last_run_at < current_date) or (p.cadence='weekly' and p.last_run_at < now()-interval '6 days') or (p.cadence='monthly' and p.last_run_at < now()-interval '27 days')) order by p.id");
-  const results=[];
+  const results=[],suppressUrgent=Boolean((req.body||{}).suppress_urgent);
   for(const p of q.rows){
     const c={id:p.client_id,name:p.client_name,website_url:p.website_url,industry:p.industry,geography:p.geography,objective:p.client_objective,profile:p.profile};
-    try{results.push({programId:p.id,result:await runProgram(p,c)})}catch(e){results.push({programId:p.id,error:String(e.message||e)})}
+    try{results.push({programId:p.id,result:await runProgram(p,c,{suppressUrgent:suppressUrgent})})}catch(e){results.push({programId:p.id,error:String(e.message||e)})}
   }
   return {ran:results.length,results:results};
 });
@@ -521,8 +698,8 @@ app.post("/api/actions/:id/dismiss",async function(req){
   return {ok:true};
 });
 app.get("/api/settings/status",async function(){
-  const key=await getAIKey();
-  return {aiConfigured:Boolean(key),source:(await getSetting("openai_api_key"))?"dashboard":(ENV_AI_KEY?"environment":"none"),masked:key?("••••"+key.slice(-4)):""};
+  const key=await getAIKey(),email=await getEmailConfig(),dbEmailKey=await getSetting("resend_api_key");
+  return {aiConfigured:Boolean(key),source:(await getSetting("openai_api_key"))?"dashboard":(ENV_AI_KEY?"environment":"none"),masked:key?("••••"+key.slice(-4)):"",emailConfigured:Boolean(email.key&&email.from),emailSource:dbEmailKey?"dashboard":(ENV_RESEND_KEY?"environment":"none"),emailMasked:email.key?("••••"+email.key.slice(-4)):"",emailFrom:email.from||""};
 });
 app.post("/api/settings/openai",async function(req,reply){
   if(!SETTINGS_CODE) return reply.code(503).send({error:"Settings access code is not configured"});
@@ -542,6 +719,31 @@ app.delete("/api/settings/openai",async function(req,reply){
   if(req.headers["x-settings-code"]!==SETTINGS_CODE) return reply.code(401).send({error:"Invalid settings code"});
   await pool.query("delete from intel_settings where setting_key='openai_api_key'");
   return {ok:true,aiConfigured:Boolean(ENV_AI_KEY)};
+});
+
+app.post("/api/settings/email",async function(req,reply){
+  if(!SETTINGS_CODE) return reply.code(503).send({error:"Settings access code is not configured"});
+  if(req.headers["x-settings-code"]!==SETTINGS_CODE) return reply.code(401).send({error:"Invalid settings code"});
+  const b=req.body||{},key=String(b.api_key||"").trim(),from=String(b.from||"").trim();
+  if(!key||key.length<20) return reply.code(400).send({error:"Enter a valid Resend API key"});
+  if(!from||!from.includes("@")) return reply.code(400).send({error:"Enter a valid From address"});
+  try{
+    const r=await fetch("https://api.resend.com/domains",{headers:{Authorization:"Bearer "+key}});
+    if(!r.ok) return reply.code(400).send({error:"Resend rejected that API key"});
+  }catch{return reply.code(502).send({error:"Could not verify the Resend API key"})}
+  await setSetting("resend_api_key",key);
+  await setSetting("email_from",from);
+  return {ok:true,masked:"••••"+key.slice(-4),from:from};
+});
+app.post("/api/settings/email/test",async function(req,reply){
+  if(!SETTINGS_CODE) return reply.code(503).send({error:"Settings access code is not configured"});
+  if(req.headers["x-settings-code"]!==SETTINGS_CODE) return reply.code(401).send({error:"Invalid settings code"});
+  const to=String((req.body||{}).to||"").trim();
+  if(!to||!to.includes("@")) return reply.code(400).send({error:"Enter a valid test email"});
+  try{
+    const sent=await sendEmail(to,"Lucid Logic Intelligence email test",'<div style="font-family:Arial,sans-serif"><h2>Email delivery is connected.</h2><p>Your Managed Intelligence daily briefs can now be delivered from the platform.</p></div>',"Email delivery is connected. Your Managed Intelligence daily briefs can now be delivered from the platform.");
+    return {ok:true,id:sent.id||null};
+  }catch(e){return reply.code(500).send({error:e.message})}
 });
 
 app.post("/api/connectors",async function(req,reply){
