@@ -295,7 +295,7 @@ async function openaiDetailed(prompt,useWeb){
   const key=await getAIKey();
   if(!key) return null;
   const body={model:AI_MODEL,input:prompt,tools:useWeb?[{type:"web_search"}]:[]};
-  const r=await fetch("https://api.openai.com/v1/responses",{method:"POST",headers:{Authorization:"Bearer "+key,"Content-Type":"application/json"},body:JSON.stringify(body)});
+  const r=await fetch("https://api.openai.com/v1/responses",{method:"POST",headers:{Authorization:"Bearer "+key,"Content-Type":"application/json"},body:JSON.stringify(body),signal:AbortSignal.timeout(210000)});
   if(!r.ok) throw new Error("OpenAI "+r.status+": "+(await r.text()).slice(0,300));
   const d=await r.json();
   let text=d.output_text||"";
@@ -373,8 +373,11 @@ async function discover(client){
   return blueprint;
 }
 async function runProgram(program,client,options={}){
-  const rr=await pool.query("insert into intel_runs(program_id,client_id,run_meta) values($1,$2,$3) returning id",[program.id,client.id,JSON.stringify({source_plan:program.source_plan||[],action_plan:program.action_plan||[],cadence:program.cadence,model:AI_MODEL,program_type:program.program_type})]);
-  const runId=rr.rows[0].id;
+  let runId=Number(options.runId||0);
+  if(!runId){
+    const rr=await pool.query("insert into intel_runs(program_id,client_id,run_meta) values($1,$2,$3) returning id",[program.id,client.id,JSON.stringify({source_plan:program.source_plan||[],action_plan:program.action_plan||[],cadence:program.cadence,model:AI_MODEL,program_type:program.program_type})]);
+    runId=rr.rows[0].id;
+  }
   if(!(await hasAIKey())){
     await pool.query("update intel_runs set status='needs_configuration',summary='Add the OpenAI API key in Settings to enable live research runs.',finished_at=now() where id=$1",[runId]);
     return {runId,status:"needs_configuration"};
@@ -663,11 +666,24 @@ app.post("/api/run",async function(req,reply){
   return {ran:results.length,results:results};
 });
 
+app.get("/api/runs/:id",async function(req,reply){
+  const q=await pool.query("select r.*,p.name program_name from intel_runs r join intel_programs p on p.id=r.program_id where r.id=$1",[Number(req.params.id)]);
+  if(!q.rows[0]) return reply.code(404).send({error:"Run not found"});
+  return q.rows[0];
+});
+
 app.post("/api/programs/:id/run",async function(req,reply){
   const q=await pool.query("select p.*,c.name client_name,c.website_url,c.industry,c.geography,c.objective client_objective,c.profile from intel_programs p join intel_clients c on c.id=p.client_id where p.id=$1",[Number(req.params.id)]);
   if(!q.rows[0]) return reply.code(404).send({error:"Not found"});
   const p=q.rows[0],c={id:p.client_id,name:p.client_name,website_url:p.website_url,industry:p.industry,geography:p.geography,objective:p.client_objective,profile:p.profile};
-  try{return await runProgram(p,c)}catch(e){return reply.code(500).send({error:e.message})}
+  const existing=await pool.query("select id from intel_runs where program_id=$1 and status='running' and created_at>now()-interval '15 minutes' order by created_at desc limit 1",[p.id]);
+  if(existing.rows[0]) return reply.code(202).send({runId:existing.rows[0].id,status:"running",alreadyRunning:true});
+  const rr=await pool.query("insert into intel_runs(program_id,client_id,run_meta) values($1,$2,$3) returning id",[p.id,c.id,JSON.stringify({source_plan:p.source_plan||[],action_plan:p.action_plan||[],cadence:p.cadence,model:AI_MODEL,program_type:p.program_type,manual:true})]);
+  const runId=rr.rows[0].id;
+  setImmediate(function(){
+    runProgram(p,c,{runId:runId}).catch(function(e){app.log.error({err:e,runId:runId,programId:p.id},"manual intelligence run failed")});
+  });
+  return reply.code(202).send({runId:runId,status:"running"});
 });
 app.post("/api/actions/generate",async function(req,reply){
   const b=req.body||{};
