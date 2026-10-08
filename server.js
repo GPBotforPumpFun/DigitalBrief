@@ -812,9 +812,7 @@ app.post("/api/portal/opportunities/:id/generate",async function(req,reply){
     try{
       let payload={
         title:type==="proposal"?"Proposal draft for "+o.title:"Questions for "+o.title,
-        body:(o.summary||o.what_changed||"")+"
-
-Recommendation: "+(o.recommendation||o.why_it_matters||""),
+        body:(o.summary||o.what_changed||"")+"\n\nRecommendation: "+(o.recommendation||o.why_it_matters||""),
         notes:"Generated from the opportunity workspace. Nothing has been submitted externally."
       };
       if(await hasAIKey()){
