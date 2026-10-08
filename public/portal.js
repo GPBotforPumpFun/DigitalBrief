@@ -54,6 +54,24 @@ function signalCard(s){
     '<div class="intel-footer"><span>'+ago(s.created_at)+'</span>'+(s.source_url?'<a target="_blank" href="'+esc(s.source_url)+'">View source ↗</a>':'')+'</div></div></article>';
 }
 
+function canAutoExecute(a){
+  const types=(state.data.connectors||[]).map(c=>c.connector_type);
+  if(a.action_type==="website_post") return types.includes("wordpress")||types.includes("webhook");
+  if(a.action_type==="social_post") return types.includes("social_webhook");
+  return false;
+}
+function actionDecisionLabel(a){
+  if(canAutoExecute(a)&&a.action_type==="website_post") return "Approve & Send to Website";
+  if(canAutoExecute(a)&&a.action_type==="social_post") return "Approve & Publish";
+  return "Request Lucid Logic Action";
+}
+function actionStatusMessage(a){
+  if(a.status==="requested") return '<div class="managed-status requested"><b>Requested from Lucid Logic</b><span>Lucid Logic owns the next step. Nothing has been marked complete yet.</span></div>';
+  if(a.status==="in_progress") return '<div class="managed-status progress"><b>In progress with Lucid Logic</b><span>This work is underway and will remain here until it is marked complete.</span></div>';
+  if(a.status==="executed") return '<div class="managed-status complete"><b>Executed through a connected system</b><span>The connected channel completed this action.</span></div>';
+  if(a.status==="completed") return '<div class="managed-status complete"><b>Completed by Lucid Logic</b><span>This managed action has been marked complete.</span></div>';
+  return "";
+}
 function actionCard(a){
   const p=a.payload||{};
   const info=actionInfo(a.action_type);
@@ -74,7 +92,8 @@ function actionCard(a){
     context+tactics+
     (body?'<div class="deliverable-preview"><div class="deliverable-label">PREPARED FOR YOU</div><div class="deliverable-body">'+esc(body)+'</div></div>':'')+
     (note?'<p class="note">'+esc(note)+'</p>':'')+
-    (pending?'<div class="actions"><button class="btn gold small" onclick="approveAction('+a.id+')">'+esc(approvalLabel(a.action_type))+'</button></div>':'')+
+    actionStatusMessage(a)+
+    (pending?'<div class="action-decision-note">This does not mark the work complete. If the channel is connected, the system can execute it. Otherwise it becomes a managed Lucid Logic task.</div><div class="actions"><button class="btn gold small" onclick="approveAction('+a.id+')">'+esc(actionDecisionLabel(a))+'</button></div>':'')+
     '<div class="action-time">'+ago(a.created_at)+'</div></div></article>';
 }
 
@@ -96,17 +115,40 @@ function opportunityDateValue(value){
   const d=iso?new Date(iso[0]+"T12:00:00"):new Date(raw);
   return Number.isNaN(d.getTime())?Number.MAX_SAFE_INTEGER:d.getTime();
 }
+function artifactsForOpportunity(id){
+  return (state.data.opportunityArtifacts||[]).filter(a=>String(a.opportunity_id)===String(id));
+}
+function artifactCard(a){
+  if(a.status==="generating") return '<div class="opp-artifact generating"><div><b>'+esc(a.artifact_type==="proposal"?"Proposal draft":"Questions")+'</b><span>Generating now. You can leave this page and come back.</span></div><div class="artifact-spinner">…</div></div>';
+  if(a.status==="failed") return '<div class="opp-artifact failed"><b>Generation failed</b><span>'+esc(a.error||"Please try again.")+'</span></div>';
+  return '<details class="opp-artifact ready"><summary>'+esc(a.title||nice(a.artifact_type))+' <span>Ready</span></summary><div class="artifact-body">'+esc(a.body||"")+'</div>'+(a.notes?'<div class="artifact-notes">'+esc(a.notes)+'</div>':'')+'<button class="btn small" onclick="copyArtifact('+a.id+')">Copy</button></details>';
+}
+window.copyArtifact=function(id){
+  const a=(state.data.opportunityArtifacts||[]).find(x=>String(x.id)===String(id));
+  if(!a)return;
+  navigator.clipboard.writeText(a.body||"").then(()=>toast("Copied")).catch(()=>toast("Could not copy"));
+};
 function opportunityCard(o){
   const source=o.document_url||o.source_url||"";
   const due=opportunityDate(o.deadline);
   const qaDue=opportunityDate(o.qa_deadline);
   const reqs=Array.isArray(o.requirements)&&o.requirements.length?'<div class="opp-req"><b>Key requirements</b><ul>'+o.requirements.slice(0,8).map(r=>'<li>'+esc(typeof r==="string"?r:JSON.stringify(r))+'</li>').join("")+'</ul></div>':"";
+  const artifacts=artifactsForOpportunity(o.id);
+  const generatingQ=artifacts.some(a=>a.artifact_type==="questions"&&a.status==="generating");
+  const generatingP=artifacts.some(a=>a.artifact_type==="proposal"&&a.status==="generating");
+  const artifactHtml=artifacts.length?'<div class="pursuit-work-products"><div class="work-products-label">PURSUIT WORKSPACE</div>'+artifacts.map(artifactCard).join("")+'</div>':"";
+  const pursuit=o.pursuit_status==="pursue"
+    ?'<div class="pursuit-active"><b>Active pursuit</b><span>You have decided to pursue this opportunity. Nothing has been submitted externally. Questions and proposal drafts generated below stay in this workspace until you decide what to do with them.</span></div>'
+    :"";
   return '<article id="opp-'+o.id+'" class="opportunity-card"><div class="row"><div><div class="meta"><span>'+esc(nice(o.opportunity_type||"opportunity"))+'</span><span>•</span><span>'+esc(nice(o.pursuit_status))+'</span></div><h3>'+esc(o.title)+'</h3></div><div class="fit-score"><strong>'+esc(o.fit_score||0)+'</strong><span>FIT</span></div></div>'+
   '<p>'+esc(o.summary||"")+'</p><div class="opp-meta"><div><span>Proposal due</span><b>'+esc(due)+'</b></div><div><span>Q&A due</span><b>'+esc(qaDue)+'</b></div><div><span>Est. value</span><b>'+esc(o.estimated_value||"Unknown")+'</b></div><div><span>Geography</span><b>'+esc(o.geography||"Unknown")+'</b></div></div>'+
-  (o.recommendation?'<div class="why"><b>Lucid Logic recommendation:</b> '+esc(o.recommendation)+'</div>':'')+reqs+
+  (o.recommendation?'<div class="why"><b>Lucid Logic recommendation:</b> '+esc(o.recommendation)+'</div>':'')+reqs+pursuit+
+  '<div class="opp-action-explainer"><b>What these buttons do</b><span>Pursue only marks the opportunity active. Generate buttons create drafts here. Nothing is emailed, submitted or sent to the issuer automatically.</span></div>'+
   '<div class="actions">'+(source?'<a class="btn small" target="_blank" href="'+esc(source)+'">View RFP / source ↗</a>':'')+
-  '<button class="btn small" onclick="setOpp('+o.id+',\'pursue\')">Pursue</button><button class="btn small danger" onclick="setOpp('+o.id+',\'pass\')">Pass</button>'+
-  '<button class="btn small" onclick="generateOpp('+o.id+',\'questions\')">Generate Questions</button><button class="btn gold small" onclick="generateOpp('+o.id+',\'proposal\')">Build Proposal</button></div></article>';
+  (o.pursuit_status==="pursue"?'<button class="btn small active-state" disabled>Pursuing</button>':'<button class="btn small" onclick="setOpp('+o.id+',\'pursue\')">Mark Pursue</button>')+
+  '<button class="btn small danger" onclick="setOpp('+o.id+',\'pass\')">Pass</button>'+
+  '<button class="btn small" '+(generatingQ?'disabled':'onclick="generateOpp('+o.id+',\'questions\')"')+'>'+(generatingQ?'Generating Questions…':'Generate Questions')+'</button>'+
+  '<button class="btn gold small" '+(generatingP?'disabled':'onclick="generateOpp('+o.id+',\'proposal\')"')+'>'+(generatingP?'Generating Draft…':'Generate Proposal Draft')+'</button></div>'+artifactHtml+'</article>';
 }
 
 function priorityRow(kind,title,sub,action,label){
@@ -121,6 +163,7 @@ function overview(){
   const hasOpp=hasOpportunityProgram();
   const open=hasOpp?d.opportunities.filter(o=>o.pursuit_status!=="pass"):[];
   const pending=d.actions.filter(a=>a.status==="proposed");
+  const managed=d.actions.filter(a=>a.status==="requested"||a.status==="in_progress");
   const intelSignals=d.signals.filter(sig=>sig.program_type!=="opportunity");
   const newIntel=intelSignals.filter(sig=>Date.now()-new Date(sig.created_at).getTime()<7*86400000);
   const priorityRows=[];
@@ -146,7 +189,7 @@ function overview(){
   const programs=d.programs.map(p=>'<div class="watch-item"><div class="watch-dot"></div><div><b>'+esc(p.name)+'</b><span>'+esc(p.cadence)+' monitoring · '+esc(nice(p.program_type))+'</span></div></div>').join("");
   const hasIntel=intelSignals.length>0||d.programs.some(p=>p.program_type!=="opportunity");
   const metrics=(hasOpp?metric("Open opportunities",open.length,"RFPs, grants and pursuits","accent"):"")+
-    metric("Needs your approval",pending.length,"Prepared actions waiting on you")+
+    metric("Needs your decision",pending.length,managed.length?managed.length+" managed action"+(managed.length===1?"":"s")+" in progress":"Prepared actions waiting on you")+
     (hasIntel?metric("New intelligence",newIntel.length,"Material findings in the last 7 days"):"")+
     metric("Active monitors",d.programs.length,"Areas Lucid Logic is continuously watching");
   const metricCount=(hasOpp?1:0)+1+(hasIntel?1:0)+1;
@@ -215,15 +258,17 @@ function intelligence(){
 window.setIntelProgram=function(id){state.intelProgram=String(id);render()};
 
 function actions(){
-  const pending=state.data.actions.filter(a=>a.status==="proposed").sort((a,b)=>Number(b.priority_score||0)-Number(a.priority_score||0));
-  const finished=state.data.actions.filter(a=>a.status!=="proposed");
-  return '<div class="page-intro action-intro"><div class="page-icon">✓</div><div><h2>Action Center</h2><p>This is the short list of business actions that rise above the intelligence. Content ideas and tactical suggestions are folded underneath the primary action instead of becoming separate cards.</p></div></div>'+
-  '<div class="action-layout"><section><div class="action-section-head"><div><span>PRIORITY ACTIONS</span><h2>What should we actually do?</h2></div><div class="count-badge">'+pending.length+'</div></div>'+
-  (pending.map(actionCard).join("")||'<div class="empty">Nothing currently requires action.</div>')+'</section>'+
-  '<section><div class="action-section-head completed"><div><span>HISTORY</span><h2>Approved & completed</h2></div></div>'+
+  const decisions=state.data.actions.filter(a=>a.status==="proposed").sort((a,b)=>Number(b.priority_score||0)-Number(a.priority_score||0));
+  const managed=state.data.actions.filter(a=>a.status==="requested"||a.status==="in_progress").sort((a,b)=>Number(b.priority_score||0)-Number(a.priority_score||0));
+  const finished=state.data.actions.filter(a=>a.status==="completed"||a.status==="executed");
+  return '<div class="page-intro action-intro"><div class="page-icon">✓</div><div><h2>Action Center</h2><p>This is the short list of business actions that rise above the intelligence. A client decision does not mean the work is complete. Requested work stays visible until Lucid Logic or a connected system actually completes it.</p></div></div>'+
+  '<div class="action-layout"><section><div class="action-section-head"><div><span>NEEDS YOUR DECISION</span><h2>Recommended next actions</h2></div><div class="count-badge">'+decisions.length+'</div></div>'+
+  (decisions.map(actionCard).join("")||'<div class="empty">Nothing currently needs your decision.</div>')+'</section>'+
+  '<section><div class="action-section-head managed-head"><div><span>MANAGED WORK</span><h2>Requested or in progress</h2></div><div class="count-badge neutral">'+managed.length+'</div></div>'+
+  (managed.map(actionCard).join("")||'<div class="empty">No managed work is currently in progress.</div>')+'</section>'+
+  '<section><div class="action-section-head completed"><div><span>COMPLETED</span><h2>Actually completed</h2></div></div>'+
   (finished.map(actionCard).join("")||'<div class="empty">No completed actions yet.</div>')+'</section></div>';
 }
-
 const titles={overview:"Overview",opportunities:"Opportunities",intelligence:"Intelligence",actions:"Action Center"};
 const views={overview,opportunities,intelligence,actions};
 function configureNavigation(){
@@ -298,7 +343,52 @@ function showLogin(msg){
 }
 q("#loginForm").onsubmit=async e=>{e.preventDefault();q("#loginError").textContent="";try{await api("/api/portal/login",{method:"POST",body:JSON.stringify({email:q("#loginEmail").value,password:q("#loginPassword").value})});await start()}catch(x){q("#loginError").textContent=x.message}};
 q("#logoutBtn").onclick=async()=>{await api("/api/portal/logout",{method:"POST",body:"{}"}).catch(()=>{});showLogin()};
-window.setOpp=async(id,status)=>{try{await api("/api/portal/opportunities/"+id+"/status",{method:"POST",body:JSON.stringify({status})});toast(status==="pursue"?"Marked for pursuit":"Opportunity passed");state.data=await api("/api/portal/dashboard");render()}catch(e){toast(e.message)}};
-window.generateOpp=async(id,type)=>{try{await api("/api/portal/opportunities/"+id+"/generate",{method:"POST",body:JSON.stringify({action_type:type})});toast(type==="proposal"?"Proposal draft created":"Question set created");state.data=await api("/api/portal/dashboard");state.view="actions";render()}catch(e){toast(e.message)}};
-window.approveAction=async id=>{try{const r=await api("/api/portal/actions/"+id+"/approve",{method:"POST",body:"{}"});toast(r.message||"Approved");state.data=await api("/api/portal/dashboard");render()}catch(e){toast(e.message)}};
+window.setOpp=async(id,status)=>{
+  try{
+    const r=await api("/api/portal/opportunities/"+id+"/status",{method:"POST",body:JSON.stringify({status})});
+    toast(r.message||"Opportunity updated");
+    state.data=await api("/api/portal/dashboard");
+    state.view="opportunities";
+    render();
+    setTimeout(()=>document.getElementById("opp-"+id)?.scrollIntoView({behavior:"smooth",block:"center"}),60);
+  }catch(e){toast(e.message)}
+};
+async function waitForArtifact(artifactId,oppId){
+  const started=Date.now();
+  while(Date.now()-started<240000){
+    await new Promise(r=>setTimeout(r,3000));
+    try{
+      const a=await api("/api/portal/opportunity-artifacts/"+artifactId);
+      state.data=await api("/api/portal/dashboard");
+      state.view="opportunities";
+      render();
+      if(a.status==="ready"){
+        toast("Generated and saved in this opportunity workspace");
+        setTimeout(()=>document.getElementById("opp-"+oppId)?.scrollIntoView({behavior:"smooth",block:"center"}),60);
+        return;
+      }
+      if(a.status==="failed"){toast(a.error||"Generation failed");return}
+    }catch(e){toast(e.message);return}
+  }
+  toast("Generation is still running. You can leave this page and return later.");
+}
+window.generateOpp=async(id,type)=>{
+  try{
+    const r=await api("/api/portal/opportunities/"+id+"/generate",{method:"POST",body:JSON.stringify({action_type:type})});
+    toast(r.message||"Generation started");
+    state.data=await api("/api/portal/dashboard");
+    state.view="opportunities";
+    render();
+    waitForArtifact(r.artifactId,id);
+  }catch(e){toast(e.message)}
+};
+window.approveAction=async id=>{
+  try{
+    const r=await api("/api/portal/actions/"+id+"/approve",{method:"POST",body:"{}"});
+    toast(r.message||"Action updated");
+    state.data=await api("/api/portal/dashboard");
+    state.view="actions";
+    render();
+  }catch(e){toast(e.message)}
+};
 start();
