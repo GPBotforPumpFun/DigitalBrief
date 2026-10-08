@@ -202,43 +202,121 @@ async function briefDataForUser(user){
   const since=last.rows[0]?.sent_at||new Date(Date.now()-24*3600000);
   const all=await Promise.all([
     pool.query("select s.*,p.name program_name,p.program_type from intel_signals s join intel_programs p on p.id=s.program_id where s.client_id=$1 and s.client_visible=true and p.client_visible=true and p.program_type<>'opportunity' and s.created_at>$2 order by s.importance desc,s.created_at desc limit 12",[user.client_id,since]),
-    pool.query("select a.*,p.name program_name from intel_actions a left join intel_programs p on p.id=a.program_id where a.client_id=$1 and a.status='proposed' and (p.id is null or p.client_visible=true) order by a.created_at asc limit 12",[user.client_id]),
+    pool.query("select a.*,p.name program_name,p.program_type,s.title source_signal_title,s.what_changed source_what_changed,s.why_it_matters source_why_it_matters,s.source_name source_name,s.source_url source_url,s.importance source_importance,s.confidence source_confidence,s.metadata source_metadata from intel_actions a left join intel_programs p on p.id=a.program_id left join intel_signals s on s.id=a.signal_id where a.client_id=$1 and a.status='proposed' and (p.id is null or p.client_visible=true) order by coalesce(s.importance,0) desc,coalesce(s.confidence,0) desc,a.created_at asc limit 12",[user.client_id]),
     pool.query("select o.* from intel_opportunities o join intel_programs p on p.id=o.program_id where o.client_id=$1 and p.client_visible=true and p.active=true and o.pursuit_status='review' order by coalesce(o.deadline,'2999-12-31') asc,o.created_at desc limit 8",[user.client_id])
   ]);
   return {signals:all[0].rows,actions:all[1].rows,opportunities:all[2].rows,since:since};
 }
 function briefHtml(user,client,data){
   const attention=[];
+  const actionSignalIds=new Set();
+
   for(const a of data.actions){
-    attention.push('<div style="border:1px solid #e5e7eb;border-left:4px solid #f3b51b;border-radius:10px;padding:14px;margin:10px 0"><div style="font-size:11px;font-weight:800;color:#8a6500;letter-spacing:.05em">ACTION NEEDED</div><div style="font-size:16px;font-weight:700;margin:4px 0">'+htmlEsc(a.title)+'</div><div style="font-size:13px;color:#616773;margin-bottom:10px">'+htmlEsc(a.rationale||"Lucid Logic has prepared an action for your review.")+'</div><a href="'+htmlEsc(deepLink(user,"actions","action",a.id))+'" style="display:inline-block;background:#111827;color:#fff;text-decoration:none;padding:9px 13px;border-radius:7px;font-size:12px;font-weight:700">Review action</a></div>');
+    if(a.signal_id) actionSignalIds.add(Number(a.signal_id));
+    const program=a.program_name||"Managed Intelligence";
+    const contextTitle=a.source_signal_title||"Why this is in your brief";
+    const changed=a.source_what_changed||"Lucid Logic identified a development that may warrant action.";
+    const why=a.source_why_it_matters||a.rationale||"This item may be worth acting on now.";
+    const actionWhy=a.rationale||"Lucid Logic has prepared a recommended next step for your review.";
+    const source=a.source_url?'<a href="'+htmlEsc(a.source_url)+'" style="font-size:12px;color:#315bcc;text-decoration:none;font-weight:700">View source ↗</a>':"";
+    attention.push(
+      '<div style="border:1px solid #e5e7eb;border-left:4px solid #f3b51b;border-radius:10px;padding:16px;margin:12px 0">'+
+      '<div style="font-size:10px;font-weight:800;color:#8a6500;letter-spacing:.08em;text-transform:uppercase">ACTION NEEDED · '+htmlEsc(program)+'</div>'+
+      '<div style="font-size:18px;font-weight:800;margin:6px 0 12px">'+htmlEsc(a.title)+'</div>'+
+      '<div style="background:#f7f8fa;border-radius:9px;padding:12px 13px;margin-bottom:10px">'+
+        '<div style="font-size:10px;font-weight:800;color:#7d8590;letter-spacing:.06em;margin-bottom:4px">CONTEXT</div>'+
+        '<div style="font-size:14px;font-weight:700;color:#20252d;margin-bottom:4px">'+htmlEsc(contextTitle)+'</div>'+
+        '<div style="font-size:13px;line-height:1.5;color:#4f5662">'+htmlEsc(changed)+'</div>'+
+      '</div>'+
+      '<div style="font-size:13px;line-height:1.5;background:#fffaf0;border-left:3px solid #f3b51b;padding:10px 12px;margin-bottom:10px"><b>Why it matters:</b> '+htmlEsc(why)+'</div>'+
+      '<div style="font-size:13px;line-height:1.5;color:#343a45;margin-bottom:12px"><b>What we recommend:</b> '+htmlEsc(actionWhy)+'</div>'+
+      '<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap"><a href="'+htmlEsc(deepLink(user,"actions","action",a.id))+'" style="display:inline-block;background:#111827;color:#fff;text-decoration:none;padding:10px 14px;border-radius:7px;font-size:12px;font-weight:700">Review action</a>'+source+'</div>'+
+      '</div>'
+    );
   }
+
   for(const o of data.opportunities){
-    const due=o.deadline?new Date(o.deadline+"T12:00:00").toLocaleDateString():"Deadline not confirmed";
-    attention.push('<div style="border:1px solid #e5e7eb;border-left:4px solid #f3b51b;border-radius:10px;padding:14px;margin:10px 0"><div style="font-size:11px;font-weight:800;color:#8a6500;letter-spacing:.05em">OPPORTUNITY TO REVIEW</div><div style="font-size:16px;font-weight:700;margin:4px 0">'+htmlEsc(o.title)+'</div><div style="font-size:13px;color:#616773;margin-bottom:4px">'+htmlEsc(o.summary||"")+'</div><div style="font-size:12px;color:#7b818c;margin-bottom:10px">Fit: '+htmlEsc(o.fit_score||0)+'/100 · '+htmlEsc(due)+'</div><a href="'+htmlEsc(deepLink(user,"opportunities","opp",o.id))+'" style="display:inline-block;background:#111827;color:#fff;text-decoration:none;padding:9px 13px;border-radius:7px;font-size:12px;font-weight:700">Review opportunity</a></div>');
+    const due=opportunityEmailDate(o.deadline);
+    const qa=opportunityEmailDate(o.qa_deadline);
+    attention.push(
+      '<div style="border:1px solid #e5e7eb;border-left:4px solid #f3b51b;border-radius:10px;padding:16px;margin:12px 0">'+
+      '<div style="font-size:10px;font-weight:800;color:#8a6500;letter-spacing:.08em;text-transform:uppercase">OPPORTUNITY TO REVIEW</div>'+
+      '<div style="font-size:18px;font-weight:800;margin:6px 0">'+htmlEsc(o.title)+'</div>'+
+      '<div style="font-size:13px;line-height:1.5;color:#4f5662;margin-bottom:10px">'+htmlEsc(o.summary||"")+'</div>'+
+      '<div style="background:#f7f8fa;border-radius:9px;padding:10px 12px;margin-bottom:10px;font-size:12px;color:#4f5662"><b>Fit:</b> '+htmlEsc(o.fit_score||0)+'/100 &nbsp; · &nbsp; <b>Proposal due:</b> '+htmlEsc(due)+' &nbsp; · &nbsp; <b>Q&A due:</b> '+htmlEsc(qa)+'</div>'+
+      (o.recommendation?'<div style="font-size:13px;line-height:1.5;background:#fffaf0;border-left:3px solid #f3b51b;padding:10px 12px;margin-bottom:10px"><b>Why we flagged it:</b> '+htmlEsc(o.recommendation)+'</div>':'')+
+      '<a href="'+htmlEsc(deepLink(user,"opportunities","opp",o.id))+'" style="display:inline-block;background:#111827;color:#fff;text-decoration:none;padding:10px 14px;border-radius:7px;font-size:12px;font-weight:700">Review opportunity</a>'+
+      '</div>'
+    );
   }
-  const intel=data.signals.map(sig=>'<div style="padding:14px 0;border-top:1px solid #eceff3"><div style="font-size:11px;color:#7c8490;font-weight:700">'+htmlEsc(sig.program_name||"Intelligence")+'</div><div style="font-size:16px;font-weight:700;margin:4px 0">'+htmlEsc(sig.title)+'</div><div style="font-size:13px;line-height:1.5;color:#313640">'+htmlEsc(sig.what_changed)+'</div><div style="font-size:13px;line-height:1.5;background:#fffaf0;border-left:3px solid #f3b51b;padding:9px 10px;margin-top:8px"><b>Why it matters:</b> '+htmlEsc(sig.why_it_matters)+'</div><div style="margin-top:9px"><a href="'+htmlEsc(deepLink(user,"intelligence","signal",sig.id))+'" style="font-size:12px;font-weight:700;color:#315bcc;text-decoration:none">View in portal →</a></div></div>').join("");
+
+  const standaloneSignals=data.signals.filter(sig=>!actionSignalIds.has(Number(sig.id)));
+  const intel=standaloneSignals.map(sig=>
+    '<div style="padding:15px 0;border-top:1px solid #eceff3">'+
+    '<div style="font-size:10px;color:#7c8490;font-weight:800;letter-spacing:.05em;text-transform:uppercase">'+htmlEsc(sig.program_name||"Intelligence")+'</div>'+
+    '<div style="font-size:17px;font-weight:800;margin:5px 0 7px">'+htmlEsc(sig.title)+'</div>'+
+    '<div style="font-size:13px;line-height:1.5;color:#313640"><b>What changed:</b> '+htmlEsc(sig.what_changed)+'</div>'+
+    '<div style="font-size:13px;line-height:1.5;background:#fffaf0;border-left:3px solid #f3b51b;padding:9px 10px;margin-top:8px"><b>Why it matters:</b> '+htmlEsc(sig.why_it_matters)+'</div>'+
+    '<div style="margin-top:9px"><a href="'+htmlEsc(deepLink(user,"intelligence","signal",sig.id))+'" style="font-size:12px;font-weight:700;color:#315bcc;text-decoration:none">View intelligence →</a></div>'+
+    '</div>'
+  ).join("");
+
   const nothing=!attention.length&&!intel;
-  return '<!doctype html><html><body style="margin:0;background:#f4f5f7;font-family:Arial,sans-serif;color:#111827"><div style="max-width:720px;margin:auto;padding:24px"><div style="background:#11151d;color:#fff;border-radius:14px;padding:22px 24px"><div style="font-size:11px;color:#f3b51b;font-weight:800;letter-spacing:.08em">LUCID LOGIC MANAGED INTELLIGENCE</div><div style="font-size:26px;font-weight:800;margin-top:5px">'+htmlEsc(client.name)+'</div><div style="font-size:13px;color:#c5cad2;margin-top:5px">Daily Intelligence Brief</div></div><div style="background:#fff;border-radius:14px;padding:22px 24px;margin-top:12px">'+
-    (attention.length?'<div style="font-size:18px;font-weight:800">Needs your attention</div><div style="font-size:13px;color:#68707c;margin:4px 0 10px">These items need a decision or review.</div>'+attention.join(""):"")+
-    (intel?'<div style="font-size:18px;font-weight:800;margin-top:'+(attention.length?24:0)+'px">New intelligence</div><div style="font-size:13px;color:#68707c;margin:4px 0 8px">What changed since your last brief, and why it matters.</div>'+intel:"")+
-    (nothing?'<div style="padding:20px 0"><div style="font-size:18px;font-weight:800">Nothing material today.</div><div style="font-size:13px;color:#68707c;margin-top:6px">We are still monitoring. There are no new material changes or outstanding decisions for you right now.</div></div>':"")+
-    '<div style="border-top:1px solid #eceff3;margin-top:20px;padding-top:15px;font-size:12px;color:#7d8590">Read in email. Act in the portal. <a href="'+htmlEsc(deepLink(user,"overview"))+'" style="color:#315bcc;font-weight:700;text-decoration:none">Open your workspace →</a></div></div></div></body></html>';
+  return '<!doctype html><html><body style="margin:0;background:#f4f5f7;font-family:Arial,sans-serif;color:#111827"><div style="max-width:760px;margin:auto;padding:24px">'+
+    '<div style="background:#11151d;color:#fff;border-radius:14px;padding:22px 24px">'+
+      '<div style="font-size:11px;color:#f3b51b;font-weight:800;letter-spacing:.08em">LUCID LOGIC MANAGED INTELLIGENCE</div>'+
+      '<div style="font-size:26px;font-weight:800;margin-top:5px">'+htmlEsc(client.name)+'</div>'+
+      '<div style="font-size:13px;color:#c5cad2;margin-top:5px">Daily Intelligence Brief</div>'+
+    '</div>'+
+    '<div style="background:#fff;border-radius:14px;padding:22px 24px;margin-top:12px">'+
+      (attention.length?'<div style="font-size:19px;font-weight:800">Needs your attention</div><div style="font-size:13px;color:#68707c;margin:4px 0 10px">Each item below includes the intelligence behind the recommendation, why it matters and the decision we need from you.</div>'+attention.join(""):"")+
+      (intel?'<div style="font-size:19px;font-weight:800;margin-top:'+(attention.length?26:0)+'px">New intelligence</div><div style="font-size:13px;color:#68707c;margin:4px 0 8px">Useful developments that do not currently require a decision from you.</div>'+intel:"")+
+      (nothing?'<div style="padding:20px 0"><div style="font-size:18px;font-weight:800">Nothing material today.</div><div style="font-size:13px;color:#68707c;margin-top:6px">We are still monitoring. There are no new material changes or outstanding decisions for you right now.</div></div>':"")+
+      '<div style="border-top:1px solid #eceff3;margin-top:20px;padding-top:15px;font-size:12px;color:#7d8590">Read in email. Act in the portal. <a href="'+htmlEsc(deepLink(user,"overview"))+'" style="color:#315bcc;font-weight:700;text-decoration:none">Open your workspace →</a></div>'+
+    '</div>'+
+  '</div></body></html>';
+}
+function opportunityEmailDate(value){
+  if(!value) return "Not confirmed";
+  const raw=String(value),iso=raw.match(/^\d{4}-\d{2}-\d{2}/);
+  const d=iso?new Date(iso[0]+"T12:00:00"):new Date(raw);
+  return Number.isNaN(d.getTime())?"Not confirmed":d.toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"});
 }
 function briefText(user,client,data){
   const lines=["LUCID LOGIC MANAGED INTELLIGENCE",client.name,"Daily Intelligence Brief",""];
+  const actionSignalIds=new Set();
   if(data.actions.length||data.opportunities.length){
-    lines.push("NEEDS YOUR ATTENTION");
-    for(const a of data.actions) lines.push("ACTION: "+a.title+"\n"+deepLink(user,"actions","action",a.id));
-    for(const o of data.opportunities) lines.push("OPPORTUNITY: "+o.title+"\n"+deepLink(user,"opportunities","opp",o.id));
-    lines.push("");
+    lines.push("NEEDS YOUR ATTENTION","");
+    for(const a of data.actions){
+      if(a.signal_id) actionSignalIds.add(Number(a.signal_id));
+      lines.push(
+        "ACTION: "+a.title,
+        "Context: "+(a.source_signal_title||"Intelligence finding"),
+        "What changed: "+(a.source_what_changed||"Lucid Logic identified a development that may warrant action."),
+        "Why it matters: "+(a.source_why_it_matters||a.rationale||"This item may be worth acting on now."),
+        "What we recommend: "+(a.rationale||"Review the recommended action."),
+        "Review: "+deepLink(user,"actions","action",a.id),""
+      );
+    }
+    for(const o of data.opportunities){
+      lines.push(
+        "OPPORTUNITY: "+o.title,
+        o.summary||"",
+        "Fit: "+(o.fit_score||0)+"/100",
+        "Proposal due: "+opportunityEmailDate(o.deadline),
+        o.recommendation?"Why we flagged it: "+o.recommendation:"",
+        "Review: "+deepLink(user,"opportunities","opp",o.id),""
+      );
+    }
   }
-  if(data.signals.length){
-    lines.push("NEW INTELLIGENCE");
-    for(const sig of data.signals) lines.push(sig.title+"\n"+sig.what_changed+"\nWhy it matters: "+sig.why_it_matters+"\n"+deepLink(user,"intelligence","signal",sig.id)+"\n");
+  const standalone=data.signals.filter(sig=>!actionSignalIds.has(Number(sig.id)));
+  if(standalone.length){
+    lines.push("NEW INTELLIGENCE","");
+    for(const sig of standalone) lines.push(sig.title,"What changed: "+sig.what_changed,"Why it matters: "+sig.why_it_matters,"View: "+deepLink(user,"intelligence","signal",sig.id),"");
   }
-  if(!data.actions.length&&!data.opportunities.length&&!data.signals.length) lines.push("Nothing material today. We are still monitoring.");
+  if(!data.actions.length&&!data.opportunities.length&&!standalone.length) lines.push("Nothing material today. We are still monitoring.");
   lines.push("","Read in email. Act in the portal.","Open workspace: "+deepLink(user,"overview"));
-  return lines.join("\n");
+  return lines.filter(Boolean).join("\n");
 }
 async function sendDailyBriefs(onlyClientId=null){
   const cfg=await getEmailConfig();
