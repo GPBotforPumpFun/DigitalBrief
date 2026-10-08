@@ -1,6 +1,6 @@
 const q=s=>document.querySelector(s);
 const qa=s=>Array.from(document.querySelectorAll(s));
-const state={me:null,data:null,view:"overview",intelProgram:"all",oppSort:"fit",oppStatus:"active"};
+const state={me:null,data:null,view:"overview",intelProgram:"all",oppSort:"fit",oppStatus:"active",expandedOpps:{},expandedActions:{}};
 
 function esc(v){return String(v==null?"":v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 function nice(v){return String(v||"").replaceAll("_"," ").replace(/\b\w/g,c=>c.toUpperCase())}
@@ -127,31 +127,45 @@ function actionCard(a){
   const body=p.body||p.content||"";
   const note=p.notes||"";
   const pending=a.status==="proposed";
+  const expanded=Boolean(state.expandedActions[a.id]);
   const tactics=supportingTacticsHtml(a,p.supporting_tactics);
   const context=a.signal_title?'<div class="action-context"><span>SOURCE INTELLIGENCE</span><b>'+esc(a.signal_title)+'</b>'+(a.signal_what_changed?'<p>'+esc(a.signal_what_changed)+'</p>':'')+'</div>':"";
   const outcome=a.business_outcome||p.business_outcome||"";
   const audience=a.target_audience||p.target_audience||"";
-  const ownerClass=a.owner_type==="lucid_logic"?"owner-lucid":"owner-client";
-  const categoryClass="category-"+String(a.action_category||"general").replace(/[^a-z0-9_-]/gi,"").toLowerCase();
-  const footer=(pending
-    ?'<div class="action-footer-copy">'+(a.owner_type==="lucid_logic"?"Lucid Logic will own this only if you request it.":"Your team owns this action. Nothing is sent or completed automatically.")+'</div><button class="btn gold small" onclick="approveAction('+a.id+')">'+esc(actionDecisionLabel(a))+'</button>'
+  const ownerLabel=a.owner_type==="lucid_logic"?"Lucid Logic":"Your team";
+  const statusLabel=a.status==="proposed"?"Decision":a.status==="requested"?"Requested":a.status==="in_progress"?"In progress":nice(a.status);
+  const mainButton=pending
+    ?'<button class="btn gold small" onclick="approveAction('+a.id+')">'+esc(actionDecisionLabel(a))+'</button>'
     :(a.status==="in_progress"&&a.owner_type!=="lucid_logic"
-      ?'<div class="action-footer-copy">Your team owns this next step.</div><button class="btn gold small" onclick="completeMyAction('+a.id+')">Mark Complete</button>'
-      :'<div class="action-footer-copy">'+esc(nice(a.status))+'</div>'));
-  return '<article id="action-'+a.id+'" class="action-card '+ownerClass+' '+categoryClass+'">'+
-    '<div class="action-card-head"><div class="action-head-left"><div class="action-icon">'+esc(info.icon)+'</div><div><div class="action-type">'+esc(info.label)+' · '+esc(nice(a.action_category||"general"))+'</div><h3>'+esc(a.title)+'</h3></div></div><div class="action-score"><strong>'+esc(a.priority_score||50)+'</strong><span>PRIORITY</span></div></div>'+
-    '<div class="action-card-body">'+
+      ?'<button class="btn gold small" onclick="completeMyAction('+a.id+')">Mark Complete</button>'
+      :"");
+  return '<article id="action-'+a.id+'" class="action-card compact-action '+(expanded?"expanded":"collapsed")+'">'+
+    '<div class="action-summary-row">'+
+      '<div class="action-summary-main"><div class="action-kicker"><span>'+esc(info.label)+'</span><span>•</span><span>'+esc(nice(a.action_category||"general"))+'</span><span>•</span><span>'+esc(statusLabel)+'</span></div><h3>'+esc(a.title)+'</h3>'+
+      (outcome?'<p class="action-outcome-line">'+esc(outcome)+'</p>':'')+
+      (a.client_step?'<div class="compact-next"><b>Next:</b> '+esc(a.client_step)+'</div>':'')+
+      '<div class="compact-owner">Owner: <b>'+esc(ownerLabel)+'</b></div></div>'+
+      '<div class="compact-score"><strong>'+esc(a.priority_score||50)+'</strong><span>priority</span></div>'+
+    '</div>'+
+    '<div class="compact-action-bar">'+
+      (mainButton||'<span></span>')+
+      '<button class="btn small secondary" onclick="toggleActionDetails('+a.id+')">'+(expanded?"Hide details":"Details & tools")+'</button>'+
+    '</div>'+
+    '<div class="action-detail-panel '+(expanded?"show":"")+'">'+
       '<p class="action-desc">'+esc(a.rationale||info.desc)+'</p>'+
-      (outcome?'<div class="action-outcome"><span>BUSINESS OUTCOME</span><b>'+esc(outcome)+'</b>'+(audience?'<small>Target: '+esc(audience)+'</small>':'')+'</div>':'')+
+      (audience?'<div class="detail-pair"><span>Target audience</span><b>'+esc(audience)+'</b></div>':'')+
       context+tactics+
       (body?'<div class="deliverable-preview"><div class="deliverable-label">PREPARED FOR YOU</div><div class="deliverable-body">'+esc(body)+'</div></div>':'')+
       (note?'<p class="note">'+esc(note)+'</p>':'')+
-      (a.client_step?'<div class="client-step"><span>NEXT STEP</span><b>'+esc(a.client_step)+'</b></div>':'')+
       actionStatusMessage(a)+
     '</div>'+
-    '<div class="action-card-footer">'+footer+'<div class="action-time">'+ago(a.created_at)+'</div></div>'+
   '</article>';
 }
+window.toggleActionDetails=function(id){
+  state.expandedActions[id]=!state.expandedActions[id];
+  render();
+  setTimeout(()=>document.getElementById("action-"+id)?.scrollIntoView({block:"nearest"}),20);
+};
 
 function opportunityDate(value){
   if(!value) return "Not found";
@@ -191,6 +205,7 @@ function opportunityCard(o){
   const source=o.document_url||o.source_url||"";
   const due=opportunityDate(o.deadline);
   const qaDue=opportunityDate(o.qa_deadline);
+  const expanded=Boolean(state.expandedOpps[o.id]);
   const reqs=Array.isArray(o.requirements)&&o.requirements.length?'<div class="opp-req"><div class="subsection-label">KEY REQUIREMENTS</div><ul>'+o.requirements.slice(0,8).map(r=>'<li>'+esc(typeof r==="string"?r:JSON.stringify(r))+'</li>').join("")+'</ul></div>':"";
   const artifacts=artifactsForOpportunity(o.id);
   const qArt=artifacts.find(a=>a.artifact_type==="questions");
@@ -210,25 +225,35 @@ function opportunityCard(o){
     :o.pursuit_status==="submitted"
       ?'<button class="btn small" onclick="setOpp('+o.id+',\'won\')">Mark Won</button><button class="btn small danger" onclick="setOpp('+o.id+',\'lost\')">Mark Lost</button>'
       :"";
-  return '<article id="opp-'+o.id+'" class="opportunity-card status-'+esc(o.pursuit_status||"review")+'">'+
-    '<div class="opp-card-head"><div class="opp-head-copy"><div class="meta"><span>'+esc(nice(o.opportunity_type||"opportunity"))+'</span><span>•</span><span>'+esc(nice(o.pursuit_status))+'</span></div><h3>'+esc(o.title)+'</h3></div><div class="fit-score"><strong>'+esc(o.fit_score||0)+'</strong><span>FIT</span></div></div>'+
-    '<div class="opp-card-body">'+
-      '<p class="opp-summary">'+esc(o.summary||"")+'</p>'+
-      '<div class="opp-meta"><div><span>Proposal due</span><b>'+esc(due)+'</b></div><div><span>Q&A due</span><b>'+esc(qaDue)+'</b></div><div><span>Est. value</span><b>'+esc(o.estimated_value||"Unknown")+'</b></div><div><span>Geography</span><b>'+esc(o.geography||"Unknown")+'</b></div></div>'+
-      (o.recommendation?'<div class="why"><span>LUCID LOGIC RECOMMENDATION</span><b>'+esc(o.recommendation)+'</b></div>':'')+
-      reqs+
-      '<div class="opp-owner-band"><div><span>WHO OWNS THE NEXT STEP</span><b>Your team</b></div><p>'+esc(ownershipText)+'</p></div>'+
-      artifactHtml+
+  const workCount=artifacts.filter(a=>a.status==="ready").length;
+  const statusText=nice(o.pursuit_status||"review");
+  return '<article id="opp-'+o.id+'" class="opportunity-card compact-opportunity status-'+esc(o.pursuit_status||"review")+' '+(expanded?"expanded":"collapsed")+'">'+
+    '<div class="opp-summary-row">'+
+      '<div class="opp-summary-main"><div class="opp-kicker"><span>'+esc(nice(o.opportunity_type||"opportunity"))+'</span><span>•</span><span class="opp-status">'+esc(statusText)+'</span></div><h3>'+esc(o.title)+'</h3><p>'+esc(o.summary||"")+'</p></div>'+
+      '<div class="compact-fit"><strong>'+esc(o.fit_score||0)+'</strong><span>fit</span></div>'+
     '</div>'+
-    '<div class="actions opp-actions-bar">'+(source?'<a class="btn small" target="_blank" href="'+esc(source)+'">View RFP / source ↗</a>':'')+
-      (o.pursuit_status==="review"?'<button class="btn small" onclick="setOpp('+o.id+',\'pursue\')">Mark Pursue</button>':'')+
+    '<div class="opp-quick-meta"><span><b>Due</b> '+esc(due)+'</span><span><b>Q&A</b> '+esc(qaDue)+'</span><span><b>Value</b> '+esc(o.estimated_value||"Unknown")+'</span><span><b>Geo</b> '+esc(o.geography||"Unknown")+'</span></div>'+
+    (o.recommendation?'<div class="opp-recommendation-line"><b>Recommendation:</b> '+esc(o.recommendation)+'</div>':'')+
+    '<div class="compact-opp-bar">'+
+      '<div class="compact-opp-actions">'+(source?'<a class="btn small secondary" target="_blank" href="'+esc(source)+'">View RFP ↗</a>':'')+
+      (o.pursuit_status==="review"?'<button class="btn small" onclick="setOpp('+o.id+',\'pursue\')">Pursue</button>':'')+
       (!["pass","won","lost"].includes(o.pursuit_status)?'<button class="btn small danger" onclick="setOpp('+o.id+',\'pass\')">Pass</button>':'')+
       lifecycle+
-      '<button class="btn small" '+(generatingQ||readyQ?'disabled':'onclick="generateOpp('+o.id+',\'questions\')"')+'>'+(generatingQ?'Generating Questions…':readyQ?'Questions Ready':'Generate Questions')+'</button>'+
-      '<button class="btn gold small" '+(generatingP||readyP?'disabled':'onclick="generateOpp('+o.id+',\'proposal\')"')+'>'+(generatingP?'Generating Draft…':readyP?'Proposal Draft Ready':'Generate Proposal Draft')+'</button>'+
+      '<button class="btn small" '+(generatingQ||readyQ?'disabled':'onclick="generateOpp('+o.id+',\'questions\')"')+'>'+(generatingQ?'Generating…':readyQ?'Questions Ready':'Generate Questions')+'</button>'+
+      '<button class="btn gold small" '+(generatingP||readyP?'disabled':'onclick="generateOpp('+o.id+',\'proposal\')"')+'>'+(generatingP?'Generating…':readyP?'Proposal Ready':'Generate Proposal')+'</button></div>'+
+      '<button class="btn small secondary opp-detail-toggle" onclick="toggleOpportunityDetails('+o.id+')">'+(expanded?"Hide details":"Details"+(workCount?" · "+workCount+" ready":""))+'</button>'+
+    '</div>'+
+    '<div class="opp-detail-panel '+(expanded?"show":"")+'">'+
+      '<div class="opp-owner-band"><div><span>WHO OWNS THE NEXT STEP</span><b>Your team</b></div><p>'+esc(ownershipText)+'</p></div>'+
+      reqs+artifactHtml+
     '</div>'+
   '</article>';
 }
+window.toggleOpportunityDetails=function(id){
+  state.expandedOpps[id]=!state.expandedOpps[id];
+  render();
+  setTimeout(()=>document.getElementById("opp-"+id)?.scrollIntoView({block:"nearest"}),20);
+};
 
 function priorityRow(kind,title,sub,action,label){
   return '<button class="priority-row" onclick="'+action+'"><div class="priority-kind">'+esc(kind)+'</div><div class="priority-copy"><b>'+esc(title)+'</b><span>'+esc(sub)+'</span></div><div class="priority-go">'+esc(label)+' →</div></button>';
@@ -378,6 +403,8 @@ function urlIntent(){
 function applyUrlIntent(){
   const intent=urlIntent();
   if(intent.view&&views[intent.view]) state.view=intent.view;
+  if(intent.action) state.expandedActions[intent.action]=true;
+  if(intent.opp) state.expandedOpps[intent.opp]=true;
   render();
   const target=intent.action?("action-"+intent.action):intent.opp?("opp-"+intent.opp):intent.signal?("signal-"+intent.signal):"";
   if(target){
