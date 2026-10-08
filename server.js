@@ -47,7 +47,15 @@ const schema = [
 "create table if not exists intel_alert_deliveries(id serial primary key,signal_id int not null references intel_signals(id) on delete cascade,user_id int not null references intel_client_users(id) on delete cascade,status text not null,provider_message_id text,error text,sent_at timestamptz not null default now(),unique(signal_id,user_id))",
 "create index if not exists ix_brief_deliveries_user_sent on intel_brief_deliveries(user_id,sent_at desc)",
 "alter table intel_client_users add column if not exists brief_recipient boolean not null default true",
-"alter table intel_client_users add column if not exists urgent_recipient boolean not null default true"
+"alter table intel_client_users add column if not exists urgent_recipient boolean not null default true",
+"alter table intel_actions add column if not exists action_scope text not null default 'raw'",
+"alter table intel_actions add column if not exists priority_score int not null default 50",
+"alter table intel_actions add column if not exists action_category text not null default 'general'",
+"alter table intel_actions add column if not exists business_outcome text",
+"alter table intel_actions add column if not exists target_audience text",
+"alter table intel_actions add column if not exists source_signal_ids jsonb not null default '[]'::jsonb",
+"alter table intel_actions add column if not exists superseded boolean not null default false",
+"create index if not exists ix_actions_client_scope_status on intel_actions(client_id,action_scope,status,superseded)"
 ];
 
 function encrypt(obj){
@@ -197,6 +205,59 @@ async function deliverySettings(clientId){
   const q=await pool.query("select brief_enabled,urgent_enabled from intel_delivery_settings where client_id=$1",[clientId]);
   return q.rows[0]||{brief_enabled:true,urgent_enabled:true};
 }
+async function synthesizeClientActions(clientId){
+  if(!(await hasAIKey())) return {created:0,skipped:true,reason:"ai_not_configured"};
+  const clientQ=await pool.query("select * from intel_clients where id=$1",[clientId]);
+  const client=clientQ.rows[0];
+  if(!client) return {created:0,skipped:true,reason:"client_not_found"};
+
+  const signalsQ=await pool.query("select s.id,s.program_id,s.title,s.what_changed,s.why_it_matters,s.source_name,s.source_url,s.importance,s.confidence,s.metadata,s.created_at,p.name program_name,p.program_type from intel_signals s join intel_programs p on p.id=s.program_id where s.client_id=$1 and s.client_visible=true and p.client_visible=true and p.program_type<>'opportunity' and s.created_at>now()-interval '14 days' order by s.importance desc,s.confidence desc,s.created_at desc limit 30",[clientId]);
+  if(!signalsQ.rows.length) return {created:0,skipped:true,reason:"no_recent_signals"};
+
+  const rawQ=await pool.query("select a.id,a.signal_id,a.action_type,a.title,a.rationale,a.payload,p.name program_name from intel_actions a left join intel_programs p on p.id=a.program_id where a.client_id=$1 and a.status='proposed' and a.action_scope='raw' order by a.created_at desc limit 40",[clientId]);
+
+  const signals=signalsQ.rows.map(x=>({id:x.id,program_id:x.program_id,program:x.program_name,type:x.program_type,title:x.title,what_changed:x.what_changed,why_it_matters:x.why_it_matters,importance:x.importance,confidence:x.confidence,metadata:x.metadata,source:x.source_name,url:x.source_url}));
+  const raw=rawQ.rows.map(x=>({id:x.id,signal_id:x.signal_id,type:x.action_type,title:x.title,rationale:x.rationale,program:x.program_name}));
+
+  const prompt="You are the senior growth and risk advisor for Lucid Logic's Managed Intelligence service. Turn recent intelligence into a SHORT executive action list for the client.\n"+
+    "CLIENT: "+client.name+"; website "+(client.website_url||"")+"; industry "+(client.industry||"")+"; geography "+(client.geography||"")+"; business objective "+(client.objective||"")+".\n"+
+    "RECENT INTELLIGENCE: "+JSON.stringify(signals)+".\n"+
+    "RAW ACTION IDEAS FROM INDIVIDUAL MONITORS: "+JSON.stringify(raw)+".\n"+
+    "Return ONLY JSON with actions. Create 3 to 5 actions maximum, and fewer if fewer are truly important. These are the client's PRIMARY business actions, not a content-production checklist. Prioritize: (1) revenue generation and sales opportunities, (2) material risk/compliance response, (3) retention/account response, (4) reputation/competitive response. A website page, blog post or social post is usually a SUPPORTING TACTIC, not the primary action. If intelligence creates a sellable service opportunity, the primary action should say who to contact and what offer to make. Example: if DOJ/ADA enforcement increases demand and the client can sell accessibility remediation, prefer 'Offer ADA accessibility audits to existing clients and qualified prospects' over 'Publish an ADA page.' Supporting content can be listed under supporting_tactics. Consolidate overlapping signals into one action. Do not create an action merely because a raw monitor suggested one.\n"+
+    "Each action must include: title, action_type (client_outreach, prospect_outreach, service_offer, risk_response, account_followup, reputation_response, website_post, social_post, email_draft, brief, other), category (revenue, risk, retention, reputation, competitive, operational), priority_score 1-100, business_outcome, target_audience, rationale, supporting_tactics array, and source_signal_ids array using only the supplied signal IDs. Priority scores above 80 should be rare and mean it deserves attention now.";
+
+  const out=parseJson(await openai(prompt,false));
+  if(!out||!Array.isArray(out.actions)) throw new Error("Action synthesis response did not contain actions");
+
+  await pool.query("update intel_actions set superseded=true where client_id=$1 and action_scope='priority' and status='proposed' and superseded=false",[clientId]);
+
+  const signalMap=new Map(signalsQ.rows.map(x=>[Number(x.id),x]));
+  let created=0;
+  for(const a of out.actions.slice(0,5)){
+    const ids=Array.isArray(a.source_signal_ids)?a.source_signal_ids.map(Number).filter(id=>signalMap.has(id)):[];
+    const first=ids.length?signalMap.get(ids[0]):null;
+    const payload={supporting_tactics:Array.isArray(a.supporting_tactics)?a.supporting_tactics:[],business_outcome:a.business_outcome||"",target_audience:a.target_audience||"",source_signal_ids:ids};
+    await pool.query("insert into intel_actions(signal_id,client_id,program_id,action_type,title,rationale,payload,action_scope,priority_score,action_category,business_outcome,target_audience,source_signal_ids,superseded) values($1,$2,$3,$4,$5,$6,$7,'priority',$8,$9,$10,$11,$12,false)",[
+      first?first.id:null,clientId,first?first.program_id:null,a.action_type||"other",a.title,a.rationale||"",JSON.stringify(payload),
+      Math.max(1,Math.min(100,Number(a.priority_score||50))),a.category||"general",a.business_outcome||null,a.target_audience||null,JSON.stringify(ids)
+    ]);
+    created++;
+  }
+  return {created};
+}
+async function ensurePriorityActionsFresh(clientId,force=false){
+  const q=await pool.query("select (select max(created_at) from intel_signals where client_id=$1) latest_signal,(select max(created_at) from intel_actions where client_id=$1 and action_scope='priority' and superseded=false) latest_priority",[clientId]);
+  const row=q.rows[0]||{};
+  if(!force&&row.latest_priority&&row.latest_signal&&new Date(row.latest_priority)>=new Date(row.latest_signal)) return {created:0,skipped:true,reason:"fresh"};
+  return synthesizeClientActions(clientId);
+}
+async function bootstrapPriorityActions(){
+  const q=await pool.query("select c.id from intel_clients c where c.status='active' and exists(select 1 from intel_signals s where s.client_id=c.id) and not exists(select 1 from intel_actions a where a.client_id=c.id and a.action_scope='priority' and a.superseded=false)");
+  for(const row of q.rows){
+    try{await synthesizeClientActions(row.id)}catch(e){app.log.error({err:e,clientId:row.id},"priority action bootstrap failed")}
+  }
+}
+
 function balancedTake(items,maxItems,groupKey,maxPerGroup){
   const out=[],counts={};
   for(const item of items){
@@ -225,7 +286,7 @@ async function briefDataForUser(user,options={}){
   const since=options.forceHours?new Date(Date.now()-Number(options.forceHours)*3600000):(last.rows[0]?.sent_at||new Date(Date.now()-24*3600000));
   const all=await Promise.all([
     pool.query("select s.*,p.name program_name,p.program_type from intel_signals s join intel_programs p on p.id=s.program_id where s.client_id=$1 and s.client_visible=true and p.client_visible=true and p.program_type<>'opportunity' and s.created_at>$2 order by s.importance desc,s.confidence desc,s.created_at desc limit 50",[user.client_id,since]),
-    pool.query("select a.*,p.name program_name,p.program_type,s.title source_signal_title,s.what_changed source_what_changed,s.why_it_matters source_why_it_matters,s.source_name source_name,s.source_url source_url,s.importance source_importance,s.confidence source_confidence,s.metadata source_metadata from intel_actions a left join intel_programs p on p.id=a.program_id left join intel_signals s on s.id=a.signal_id where a.client_id=$1 and a.status='proposed' and (p.id is null or p.client_visible=true) order by coalesce(s.importance,0) desc,coalesce(s.confidence,0) desc,a.created_at desc limit 50",[user.client_id]),
+    pool.query("select a.*,p.name program_name,p.program_type,s.title source_signal_title,s.what_changed source_what_changed,s.why_it_matters source_why_it_matters,s.source_name source_name,s.source_url source_url,s.importance source_importance,s.confidence source_confidence,s.metadata source_metadata from intel_actions a left join intel_programs p on p.id=a.program_id left join intel_signals s on s.id=a.signal_id where a.client_id=$1 and a.status='proposed' and a.action_scope='priority' and a.superseded=false and (p.id is null or p.client_visible=true) order by a.priority_score desc,a.created_at desc limit 20",[user.client_id]),
     pool.query("select o.*,p.name program_name from intel_opportunities o join intel_programs p on p.id=o.program_id where o.client_id=$1 and p.client_visible=true and p.active=true and o.pursuit_status='review' order by o.created_at desc limit 30",[user.client_id])
   ]);
 
@@ -377,8 +438,12 @@ async function sendDailyBriefs(onlyClientId=null,options={}){
   const args=[],where=["u.active=true","u.brief_recipient=true","c.status='active'"];
   if(onlyClientId){args.push(Number(onlyClientId));where.push("u.client_id=$"+args.length)}
   const q=await pool.query("select u.id,u.client_id,u.email,u.name,c.name client_name from intel_client_users u join intel_clients c on c.id=u.client_id left join intel_delivery_settings d on d.client_id=c.id where "+where.join(" and ")+" and coalesce(d.brief_enabled,true)=true order by u.client_id,u.id",args);
-  const results=[];
+  const results=[],preparedClients=new Set();
   for(const user of q.rows){
+    if(!preparedClients.has(Number(user.client_id))){
+      try{await ensurePriorityActionsFresh(user.client_id,false)}catch(e){app.log.error({err:e,clientId:user.client_id},"priority action refresh failed")}
+      preparedClients.add(Number(user.client_id));
+    }
     const data=await briefDataForUser(user,options);
     const client={id:user.client_id,name:user.client_name};
     const attention=data.actions.length+data.opportunities.length;
@@ -474,6 +539,7 @@ async function init(){
   await pool.query("insert into intel_opportunities(signal_id,client_id,program_id,title,summary,source_name,source_url,document_url,opportunity_type,fit_score,recommendation) select s.id,s.client_id,s.program_id,s.title,s.what_changed,s.source_name,s.source_url,s.source_url,'rfp',least(100,greatest(0,s.confidence)),s.why_it_matters from intel_signals s join intel_programs p on p.id=s.program_id where p.program_type='opportunity' and not exists(select 1 from intel_opportunities o where o.signal_id=s.id)");
   await repairOpportunityDates();
   await pool.query("delete from intel_client_sessions where expires_at<=now()");
+  setImmediate(function(){bootstrapPriorityActions().catch(function(e){app.log.error({err:e},"priority action bootstrap failed")})});
 }
 async function seed(){
   const c=await pool.query("insert into intel_clients(name,website_url,industry,geography,objective,profile) values($1,$2,$3,$4,$5,$6) returning id",["Lucid Logic Demo","https://lucidlogic.co","Digital consulting","NY + FL","Find qualified opportunities early and turn intelligence into concrete actions",JSON.stringify({demo:true})]);
@@ -706,7 +772,7 @@ app.get("/api/portal/dashboard",async function(req,reply){
   const all=await Promise.all([
     pool.query("select s.*,p.name program_name,p.program_type from intel_signals s join intel_programs p on p.id=s.program_id where s.client_id=$1 and s.client_visible=true and p.client_visible=true order by s.created_at desc limit 100",[id]),
     pool.query("select o.* from intel_opportunities o join intel_programs p on p.id=o.program_id where o.client_id=$1 and p.active=true and p.client_visible=true order by case o.pursuit_status when 'pursue' then 0 when 'review' then 1 else 2 end,coalesce(o.deadline,'2999-12-31') asc,o.created_at desc",[id]),
-    pool.query("select a.*,s.title signal_title from intel_actions a left join intel_signals s on s.id=a.signal_id left join intel_programs p on p.id=a.program_id where a.client_id=$1 and (p.id is null or p.client_visible=true) order by a.created_at desc limit 150",[id]),
+    pool.query("select a.*,s.title signal_title,s.what_changed signal_what_changed,s.why_it_matters signal_why_it_matters from intel_actions a left join intel_signals s on s.id=a.signal_id left join intel_programs p on p.id=a.program_id where a.client_id=$1 and a.action_scope='priority' and a.superseded=false and (p.id is null or p.client_visible=true) order by case when a.status='proposed' then 0 else 1 end,a.priority_score desc,a.created_at desc limit 50",[id]),
     pool.query("select id,name,program_type,cadence,objective,last_run_at from intel_programs where client_id=$1 and active=true and client_visible=true order by name",[id])
   ]);
   return {signals:all[0].rows,opportunities:all[1].rows,actions:all[2].rows,programs:all[3].rows};
@@ -807,6 +873,14 @@ app.patch("/api/clients/:clientId/portal-users/:userId/delivery",async function(
   return r.rows[0];
 });
 
+app.post("/api/clients/:id/rebuild-actions",async function(req,reply){
+  const clientId=Number(req.params.id);
+  const cq=await pool.query("select id from intel_clients where id=$1",[clientId]);
+  if(!cq.rows[0]) return reply.code(404).send({error:"Client not found"});
+  setImmediate(function(){ensurePriorityActionsFresh(clientId,true).catch(function(e){app.log.error({err:e,clientId:clientId},"priority action rebuild failed")})});
+  return reply.code(202).send({status:"queued"});
+});
+
 app.patch("/api/clients/:id/delivery",async function(req,reply){
   const id=Number(req.params.id),b=req.body||{};
   const brief=b.brief_enabled!==false,urgent=b.urgent_enabled!==false;
@@ -885,11 +959,15 @@ app.post("/api/run",async function(req,reply){
   }
   const work=queued.filter(x=>x.status==="queued");
   setImmediate(async function(){
+    const touched=new Set();
     for(const item of work){
       const p=item.program;
       const c={id:p.client_id,name:p.client_name,website_url:p.website_url,industry:p.industry,geography:p.geography,objective:p.client_objective,profile:p.profile};
-      try{await runProgram(p,c,{runId:item.runId,suppressUrgent:suppressUrgent})}
+      try{await runProgram(p,c,{runId:item.runId,suppressUrgent:suppressUrgent});touched.add(Number(c.id))}
       catch(e){app.log.error({err:e,runId:item.runId,programId:p.id},"scheduled intelligence run failed")}
+    }
+    for(const clientId of touched){
+      try{await ensurePriorityActionsFresh(clientId,true)}catch(e){app.log.error({err:e,clientId:clientId},"priority action refresh after scheduled run failed")}
     }
   });
   return reply.code(202).send({queued:work.length,alreadyRunning:queued.length-work.length,runs:queued.map(x=>({programId:x.programId,runId:x.runId,status:x.status}))});
@@ -914,6 +992,7 @@ app.post("/api/programs/:id/run",async function(req,reply){
   setImmediate(async function(){
     try{
       await runProgram(p,c,{runId:runId});
+      try{await ensurePriorityActionsFresh(c.id,true)}catch(e){app.log.error({err:e,clientId:c.id},"priority action refresh after manual run failed")}
       if(sendBrief){
         const delivery=await sendDailyBriefs(c.id);
         await pool.query("update intel_runs set run_meta=run_meta||$1::jsonb where id=$2",[JSON.stringify({manual_email_delivery:delivery}),runId]);
