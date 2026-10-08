@@ -863,7 +863,7 @@ app.post("/api/portal/actions/:id/work-products",async function(req,reply){
   const aq=await pool.query("select a.*,s.title signal_title,s.what_changed,s.why_it_matters,s.source_url,p.name program_name from intel_actions a left join intel_signals s on s.id=a.signal_id left join intel_programs p on p.id=a.program_id where a.id=$1 and a.client_id=$2",[actionId,u.client_id]);
   const action=aq.rows[0];
   if(!action) return reply.code(404).send({error:"Action not found"});
-  const tacticKey=crypto.createHash("sha256").update(String(tacticIndex)+"|"+tactic.toLowerCase()).digest("hex").slice(0,24);
+  const tacticKey=String(tacticIndex)+":"+tactic.toLowerCase().slice(0,500);
   const existing=await pool.query("select * from intel_action_artifacts where action_id=$1 and tactic_key=$2 order by updated_at desc limit 1",[actionId,tacticKey]);
   if(existing.rows[0]){
     const a=existing.rows[0];
