@@ -386,7 +386,7 @@ window.openClient=async function(id){
     const delivery=x.delivery||{brief_enabled:true,urgent_enabled:true};
     const activeUsers=(x.portalUsers||[]).filter(function(u){return u.active});
     const recipients=activeUsers.length?'<div class="recipient-list">'+activeUsers.map(function(u){return '<span class="pill">'+esc(u.email)+'</span>'}).join(" ")+'</div>':'<div class="empty">Add a portal user before daily briefs can be delivered.</div>';
-    const briefHistory=(x.briefHistory||[]).slice(0,4).map(function(b){return '<div class="brief-history-row"><span>'+new Date(b.sent_at).toLocaleString()+'</span><b>'+esc(nice(b.status))+'</b><small>'+esc(b.new_signal_count||0)+' intel · '+esc(b.open_action_count||0)+' actions · '+esc(b.open_opportunity_count||0)+' opps</small></div>'}).join("")||'<div class="muted">No briefs sent yet.</div>';
+    const briefHistory=(x.briefHistory||[]).slice(0,4).map(function(b){return '<div class="brief-history-row"><span>'+new Date(b.sent_at).toLocaleString()+'</span><b>'+esc(nice(b.status))+'</b><small>'+esc(b.new_signal_count||0)+' intel · '+esc(b.open_action_count||0)+' actions · '+esc(b.open_opportunity_count||0)+' opps</small>'+(b.error?'<div class="brief-error">'+esc(b.error)+'</div>':'')+'</div>'}).join("")||'<div class="muted">No briefs sent yet.</div>';
 
     modal('<h2 class="section-title">'+esc(c.name)+'</h2><p class="section-sub">'+esc(c.website_url||"")+' · '+esc(c.industry||"")+'</p>'+
     '<div class="split"><div><div class="panel"><h3>Intelligence mandate</h3><p>'+esc(c.objective||"Not defined yet.")+'</p><button class="btn gold" onclick="discover('+c.id+')">Analyze website + design intel</button></div>'+
@@ -412,7 +412,8 @@ window.sendClientBrief=async function(clientId){
   try{
     const r=await api("/api/clients/"+clientId+"/send-brief",{method:"POST",body:"{}"});
     if(r.skipped){toast("Email delivery is not configured in Settings");return}
-    toast(r.sent+" brief"+(r.sent===1?"":"s")+" sent"+(r.failed?" · "+r.failed+" failed":""));
+    if(r.failed&&r.results&&r.results[0]&&r.results[0].error) toast("Brief failed: "+r.results[0].error);
+    else toast(r.sent+" brief"+(r.sent===1?"":"s")+" sent"+(r.failed?" · "+r.failed+" failed":""));
     window.openClient(clientId);
   }catch(e){toast(e.message)}
 };
