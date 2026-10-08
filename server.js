@@ -197,15 +197,67 @@ async function deliverySettings(clientId){
   const q=await pool.query("select brief_enabled,urgent_enabled from intel_delivery_settings where client_id=$1",[clientId]);
   return q.rows[0]||{brief_enabled:true,urgent_enabled:true};
 }
+function balancedTake(items,maxItems,groupKey,maxPerGroup){
+  const out=[],counts={};
+  for(const item of items){
+    if(out.length>=maxItems) break;
+    const key=String(item[groupKey]||"other");
+    if((counts[key]||0)>=maxPerGroup) continue;
+    counts[key]=(counts[key]||0)+1;
+    out.push(item);
+  }
+  return out;
+}
+function opportunityPriority(o){
+  let score=Number(o.fit_score||0);
+  if(o.deadline){
+    const d=new Date(String(o.deadline).slice(0,10)+"T12:00:00");
+    if(!Number.isNaN(d.getTime())){
+      const days=Math.ceil((d.getTime()-Date.now())/86400000);
+      if(days>=0&&days<=7) score+=30;
+      else if(days<=14) score+=15;
+    }
+  }
+  return score;
+}
 async function briefDataForUser(user,options={}){
   const last=await pool.query("select sent_at from intel_brief_deliveries where user_id=$1 and status='sent' order by sent_at desc limit 1",[user.id]);
   const since=options.forceHours?new Date(Date.now()-Number(options.forceHours)*3600000):(last.rows[0]?.sent_at||new Date(Date.now()-24*3600000));
   const all=await Promise.all([
-    pool.query("select s.*,p.name program_name,p.program_type from intel_signals s join intel_programs p on p.id=s.program_id where s.client_id=$1 and s.client_visible=true and p.client_visible=true and p.program_type<>'opportunity' and s.created_at>$2 order by s.importance desc,s.created_at desc limit 12",[user.client_id,since]),
-    pool.query("select a.*,p.name program_name,p.program_type,s.title source_signal_title,s.what_changed source_what_changed,s.why_it_matters source_why_it_matters,s.source_name source_name,s.source_url source_url,s.importance source_importance,s.confidence source_confidence,s.metadata source_metadata from intel_actions a left join intel_programs p on p.id=a.program_id left join intel_signals s on s.id=a.signal_id where a.client_id=$1 and a.status='proposed' and (p.id is null or p.client_visible=true) order by coalesce(s.importance,0) desc,coalesce(s.confidence,0) desc,a.created_at asc limit 12",[user.client_id]),
-    pool.query("select o.* from intel_opportunities o join intel_programs p on p.id=o.program_id where o.client_id=$1 and p.client_visible=true and p.active=true and o.pursuit_status='review' order by coalesce(o.deadline,'2999-12-31') asc,o.created_at desc limit 8",[user.client_id])
+    pool.query("select s.*,p.name program_name,p.program_type from intel_signals s join intel_programs p on p.id=s.program_id where s.client_id=$1 and s.client_visible=true and p.client_visible=true and p.program_type<>'opportunity' and s.created_at>$2 order by s.importance desc,s.confidence desc,s.created_at desc limit 50",[user.client_id,since]),
+    pool.query("select a.*,p.name program_name,p.program_type,s.title source_signal_title,s.what_changed source_what_changed,s.why_it_matters source_why_it_matters,s.source_name source_name,s.source_url source_url,s.importance source_importance,s.confidence source_confidence,s.metadata source_metadata from intel_actions a left join intel_programs p on p.id=a.program_id left join intel_signals s on s.id=a.signal_id where a.client_id=$1 and a.status='proposed' and (p.id is null or p.client_visible=true) order by coalesce(s.importance,0) desc,coalesce(s.confidence,0) desc,a.created_at desc limit 50",[user.client_id]),
+    pool.query("select o.*,p.name program_name from intel_opportunities o join intel_programs p on p.id=o.program_id where o.client_id=$1 and p.client_visible=true and p.active=true and o.pursuit_status='review' order by o.created_at desc limit 30",[user.client_id])
   ]);
-  return {signals:all[0].rows,actions:all[1].rows,opportunities:all[2].rows,since:since};
+
+  const allSignals=all[0].rows;
+  const allActions=all[1].rows;
+  const allOpps=all[2].rows.sort((a,b)=>opportunityPriority(b)-opportunityPriority(a));
+
+  // A daily brief should feel curated, not like an inbox dump.
+  // Cap at five decision items total, max two from any single intelligence program.
+  const priorityOpps=allOpps.filter(o=>opportunityPriority(o)>=75);
+  const opportunitySlots=Math.min(2,priorityOpps.length);
+  const selectedOpps=priorityOpps.slice(0,opportunitySlots);
+  const remainingSlots=Math.max(0,5-selectedOpps.length);
+  const selectedActions=balancedTake(allActions,remainingSlots,"program_id",2);
+
+  // New intelligence is FYI-only and is similarly balanced across programs.
+  const actionSignalIds=new Set(selectedActions.map(a=>Number(a.signal_id||0)).filter(Boolean));
+  const candidateSignals=allSignals.filter(sig=>!actionSignalIds.has(Number(sig.id)));
+  const selectedSignals=balancedTake(candidateSignals,6,"program_id",2);
+
+  return {
+    signals:selectedSignals,
+    actions:selectedActions,
+    opportunities:selectedOpps,
+    totals:{signals:allSignals.length,actions:allActions.length,opportunities:allOpps.length},
+    hidden:{
+      signals:Math.max(0,allSignals.length-selectedSignals.length),
+      actions:Math.max(0,allActions.length-selectedActions.length),
+      opportunities:Math.max(0,allOpps.length-selectedOpps.length)
+    },
+    since:since
+  };
 }
 function briefHtml(user,client,data){
   const attention=[];
@@ -218,7 +270,7 @@ function briefHtml(user,client,data){
     const changed=a.source_what_changed||"Lucid Logic identified a development that may warrant action.";
     const why=a.source_why_it_matters||a.rationale||"This item may be worth acting on now.";
     const actionWhy=a.rationale||"Lucid Logic has prepared a recommended next step for your review.";
-    const source=a.source_url?'<a href="'+htmlEsc(a.source_url)+'" style="font-size:12px;color:#315bcc;text-decoration:none;font-weight:700">View source ↗</a>':"";
+    const source=a.source_url?'<td style="padding-left:12px;vertical-align:middle"><a href="'+htmlEsc(a.source_url)+'" style="display:inline-block;font-size:12px;color:#315bcc;text-decoration:none;font-weight:700;white-space:nowrap">View source ↗</a></td>':"";
     attention.push(
       '<div style="border:1px solid #e5e7eb;border-left:4px solid #f3b51b;border-radius:10px;padding:16px;margin:12px 0">'+
       '<div style="font-size:10px;font-weight:800;color:#8a6500;letter-spacing:.08em;text-transform:uppercase">ACTION NEEDED · '+htmlEsc(program)+'</div>'+
@@ -230,7 +282,7 @@ function briefHtml(user,client,data){
       '</div>'+
       '<div style="font-size:13px;line-height:1.5;background:#fffaf0;border-left:3px solid #f3b51b;padding:10px 12px;margin-bottom:10px"><b>Why it matters:</b> '+htmlEsc(why)+'</div>'+
       '<div style="font-size:13px;line-height:1.5;color:#343a45;margin-bottom:12px"><b>What we recommend:</b> '+htmlEsc(actionWhy)+'</div>'+
-      '<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap"><a href="'+htmlEsc(deepLink(user,"actions","action",a.id))+'" style="display:inline-block;background:#111827;color:#fff;text-decoration:none;padding:10px 14px;border-radius:7px;font-size:12px;font-weight:700">Review action</a>'+source+'</div>'+
+      '<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse"><tr><td style="vertical-align:middle"><a href="'+htmlEsc(deepLink(user,"actions","action",a.id))+'" style="display:inline-block;background:#111827;color:#fff;text-decoration:none;padding:10px 14px;border-radius:7px;font-size:12px;font-weight:700;white-space:nowrap">Review action</a></td>'+source+'</tr></table>'+
       '</div>'
     );
   }
@@ -272,6 +324,7 @@ function briefHtml(user,client,data){
       (attention.length?'<div style="font-size:19px;font-weight:800">Needs your attention</div><div style="font-size:13px;color:#68707c;margin:4px 0 10px">Each item below includes the intelligence behind the recommendation, why it matters and the decision we need from you.</div>'+attention.join(""):"")+
       (intel?'<div style="font-size:19px;font-weight:800;margin-top:'+(attention.length?26:0)+'px">New intelligence</div><div style="font-size:13px;color:#68707c;margin:4px 0 8px">Useful developments that do not currently require a decision from you.</div>'+intel:"")+
       (nothing?'<div style="padding:20px 0"><div style="font-size:18px;font-weight:800">Nothing material today.</div><div style="font-size:13px;color:#68707c;margin-top:6px">We are still monitoring. There are no new material changes or outstanding decisions for you right now.</div></div>':"")+
+      ((data.hidden.actions||data.hidden.opportunities||data.hidden.signals)?'<div style="margin-top:20px;padding:14px 15px;background:#f7f8fa;border-radius:9px;font-size:12px;line-height:1.5;color:#626a76"><b>This brief is intentionally prioritized.</b> '+(data.hidden.actions?data.hidden.actions+' additional recommended action'+(data.hidden.actions===1?' is':'s are')+' waiting in the Action Center. ':'')+(data.hidden.opportunities?data.hidden.opportunities+' additional opportunit'+(data.hidden.opportunities===1?'y is':'ies are')+' available in Opportunities. ':'')+(data.hidden.signals?data.hidden.signals+' additional intelligence item'+(data.hidden.signals===1?' is':'s are')+' available in the portal.':'')+'</div>':"")+
       '<div style="border-top:1px solid #eceff3;margin-top:20px;padding-top:15px;font-size:12px;color:#7d8590">Read in email. Act in the portal. <a href="'+htmlEsc(deepLink(user,"overview"))+'" style="color:#315bcc;font-weight:700;text-decoration:none">Open your workspace →</a></div>'+
     '</div>'+
   '</div></body></html>';
@@ -329,13 +382,14 @@ async function sendDailyBriefs(onlyClientId=null,options={}){
     const data=await briefDataForUser(user,options);
     const client={id:user.client_id,name:user.client_name};
     const attention=data.actions.length+data.opportunities.length;
-    const subject=(attention?attention+" item"+(attention===1?"":"s")+" need your attention | ":"")+client.name+" Daily Intelligence Brief";
+    const backlog=(data.hidden.actions||0)+(data.hidden.opportunities||0);
+    const subject=(attention?attention+" priority item"+(attention===1?"":"s")+" | ":"")+client.name+" Daily Intelligence Brief"+(backlog?" · "+backlog+" more in portal":"");
     try{
       const sent=await sendEmail(user.email,subject,briefHtml(user,client,data),briefText(user,client,data));
-      await pool.query("insert into intel_brief_deliveries(client_id,user_id,status,provider_message_id,new_signal_count,open_action_count,open_opportunity_count) values($1,$2,'sent',$3,$4,$5,$6)",[user.client_id,user.id,sent.id||null,data.signals.length,data.actions.length,data.opportunities.length]);
+      await pool.query("insert into intel_brief_deliveries(client_id,user_id,status,provider_message_id,new_signal_count,open_action_count,open_opportunity_count) values($1,$2,'sent',$3,$4,$5,$6)",[user.client_id,user.id,sent.id||null,data.totals.signals,data.totals.actions,data.totals.opportunities]);
       results.push({userId:user.id,email:user.email,status:"sent"});
     }catch(e){
-      await pool.query("insert into intel_brief_deliveries(client_id,user_id,status,error,new_signal_count,open_action_count,open_opportunity_count) values($1,$2,'failed',$3,$4,$5,$6)",[user.client_id,user.id,String(e.message||e),data.signals.length,data.actions.length,data.opportunities.length]);
+      await pool.query("insert into intel_brief_deliveries(client_id,user_id,status,error,new_signal_count,open_action_count,open_opportunity_count) values($1,$2,'failed',$3,$4,$5,$6)",[user.client_id,user.id,String(e.message||e),data.totals.signals,data.totals.actions,data.totals.opportunities]);
       results.push({userId:user.id,email:user.email,status:"failed",error:String(e.message||e)});
     }
   }
@@ -526,11 +580,11 @@ async function runProgram(program,client,options={}){
     return {runId,status:"needs_configuration"};
   }
   try{
-    const prompt="Act as Lucid Logic's managed intelligence analyst. Research the public web for material developments relevant to this client and program.\nCLIENT: "+client.name+"; website "+(client.website_url||"")+"; industry "+(client.industry||"")+"; geography "+(client.geography||"")+"; objective "+(client.objective||"")+".\nPROGRAM: "+program.name+"; type "+program.program_type+"; objective "+program.objective+"; emphasize "+JSON.stringify(program.source_plan)+"; permitted actions "+JSON.stringify(program.action_plan)+".\nANALYST INSTRUCTIONS: "+(program.analyst_instructions||"Use sound judgment. Prefer material, actionable developments over volume.")+".\nFind at most 6 genuinely material recent signals. Reject routine news, duplicates, vague commentary and items with no clear business consequence. For every accepted signal explain what changed and why it matters. Every signal may recommend actions from the permitted action types. Return ONLY JSON with summary, rejected_count, rejected_notes (short array), and signals. Each signal must include title, what_changed, why_it_matters, source_name, source_url, signal_date, importance 1-3, confidence 0-100, metadata object, actions with type,title,rationale,payload. Metadata should preserve type-specific facts: competitor name/change type for competitor intelligence; account/company/trigger/contact clues for account intelligence; platform/metric/old_value/new_value/query for visibility intelligence; regulator/topic/effective_date for industry intelligence. For opportunities also include opportunity with opportunity_type, fit_score 0-100, recommendation, deadline YYYY-MM-DD or null, qa_deadline YYYY-MM-DD or null, estimated_value, geography, requirements array, and document_url. IMPORTANT: if a proposal/bid/application due date or question/Q&A due date appears anywhere in the source text, extract it into the matching date field. Never leave a date field null when the source explicitly states that date.";
+    const prompt="Act as Lucid Logic's managed intelligence analyst. Research the public web for material developments relevant to this client and program.\nCLIENT: "+client.name+"; website "+(client.website_url||"")+"; industry "+(client.industry||"")+"; geography "+(client.geography||"")+"; objective "+(client.objective||"")+".\nPROGRAM: "+program.name+"; type "+program.program_type+"; objective "+program.objective+"; emphasize "+JSON.stringify(program.source_plan)+"; permitted actions "+JSON.stringify(program.action_plan)+".\nANALYST INSTRUCTIONS: "+(program.analyst_instructions||"Use sound judgment. Prefer material, actionable developments over volume.")+".\nFind at most 6 genuinely material recent signals. Reject routine news, duplicates, vague commentary and items with no clear business consequence. For every accepted signal explain what changed and why it matters. DO NOT create an action for every signal. Most intelligence should be informational. Across the entire run, recommend no more than 2 actions total, and only when the client should make a concrete decision or take a specific step within roughly the next 7 days. For opportunity programs, do not create automatic actions because the Opportunities workflow already handles the pursuit decision. Return ONLY JSON with summary, rejected_count, rejected_notes (short array), and signals. Each signal must include title, what_changed, why_it_matters, source_name, source_url, signal_date, importance 1-3, confidence 0-100, metadata object, actions with type,title,rationale,payload. Metadata should preserve type-specific facts: competitor name/change type for competitor intelligence; account/company/trigger/contact clues for account intelligence; platform/metric/old_value/new_value/query for visibility intelligence; regulator/topic/effective_date for industry intelligence. For opportunities also include opportunity with opportunity_type, fit_score 0-100, recommendation, deadline YYYY-MM-DD or null, qa_deadline YYYY-MM-DD or null, estimated_value, geography, requirements array, and document_url. IMPORTANT: if a proposal/bid/application due date or question/Q&A due date appears anywhere in the source text, extract it into the matching date field. Never leave a date field null when the source explicitly states that date.";
     const response=await openaiDetailed(prompt,true);
     const out=parseJson(response&&response.text);
     if(!out||!Array.isArray(out.signals)) throw new Error("Research response did not contain signals");
-    let accepted=0;
+    let accepted=0,autoActionCount=0;
     for(const item of out.signals.slice(0,6)){
       const ins=await pool.query("insert into intel_signals(run_id,program_id,client_id,title,what_changed,why_it_matters,source_name,source_url,signal_date,importance,confidence,metadata,client_visible) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) returning id",[runId,program.id,client.id,item.title,item.what_changed,item.why_it_matters,item.source_name,item.source_url,item.signal_date||null,item.importance||2,item.confidence||70,JSON.stringify(item.metadata||{}),program.client_visible!==false]);
       accepted++;
@@ -539,7 +593,13 @@ async function runProgram(program,client,options={}){
         const dates=normalizeOpportunityDates(o,item);
         await pool.query("insert into intel_opportunities(signal_id,client_id,program_id,title,summary,source_name,source_url,document_url,opportunity_type,fit_score,recommendation,deadline,qa_deadline,estimated_value,geography,requirements) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) on conflict(signal_id) do update set title=excluded.title,summary=excluded.summary,source_name=excluded.source_name,source_url=excluded.source_url,document_url=excluded.document_url,opportunity_type=excluded.opportunity_type,fit_score=excluded.fit_score,recommendation=excluded.recommendation,deadline=excluded.deadline,qa_deadline=excluded.qa_deadline,estimated_value=excluded.estimated_value,geography=excluded.geography,requirements=excluded.requirements,updated_at=now()",[ins.rows[0].id,client.id,program.id,item.title,item.what_changed,item.source_name,item.source_url,o.document_url||item.source_url,o.opportunity_type||"rfp",o.fit_score||item.confidence||70,o.recommendation||item.why_it_matters,dates.deadline,dates.qa_deadline,o.estimated_value||null,o.geography||client.geography||null,JSON.stringify(o.requirements||[])]);
       }
-      for(const a of item.actions||[]) await pool.query("insert into intel_actions(signal_id,client_id,program_id,action_type,title,rationale,payload) values($1,$2,$3,$4,$5,$6,$7)",[ins.rows[0].id,client.id,program.id,a.type,a.title,a.rationale||"",JSON.stringify(a.payload||{})]);
+      if(program.program_type!=="opportunity"){
+        for(const a of item.actions||[]){
+          if(autoActionCount>=2) break;
+          await pool.query("insert into intel_actions(signal_id,client_id,program_id,action_type,title,rationale,payload) values($1,$2,$3,$4,$5,$6,$7)",[ins.rows[0].id,client.id,program.id,a.type,a.title,a.rationale||"",JSON.stringify(a.payload||{})]);
+          autoActionCount++;
+        }
+      }
     }
     const rejected=Math.max(0,Number(out.rejected_count||0));
     const meta={source_plan:program.source_plan||[],action_plan:program.action_plan||[],cadence:program.cadence,model:(response&&response.model)||AI_MODEL,program_type:program.program_type,usage:(response&&response.usage)||{},response_id:(response&&response.response_id)||null,rejected_notes:Array.isArray(out.rejected_notes)?out.rejected_notes.slice(0,12):[]};
