@@ -305,6 +305,52 @@ function overview(){
   '<div class="panel watch-panel"><div class="panel-head"><div><h2>What we are watching</h2><p class="muted">You do not need to manage these. Lucid Logic does.</p></div></div>'+programs+'</div></div>';
 }
 
+function opportunityTokens(v){
+  const stop=new Set(["website","websites","design","hosting","maintenance","modernization","proposal","procurement","partner","requests","request","seeks","seek","opens","open","reopens","rfp","rfq","for","with","and","the","of","to","a","an"]);
+  return new Set(String(v||"").toLowerCase().replace(/[^a-z0-9 ]/g," ").split(/\s+/).filter(x=>x.length>=4&&!stop.has(x)));
+}
+function opportunitySimilarity(a,b){
+  const A=opportunityTokens(a),B=opportunityTokens(b);
+  if(!A.size||!B.size)return 0;
+  let common=0;A.forEach(x=>{if(B.has(x))common++});
+  return common/Math.min(A.size,B.size);
+}
+function opportunitySolicitationId(o){
+  const text=[o.title,o.summary,o.source_name].filter(Boolean).join(" ");
+  const fye=text.match(/\b(FYE\d{2,4}[-/]\d{2,8})\b/i);
+  if(fye)return fye[1].toUpperCase().replace("/","-");
+  const m=text.match(/\b(?:RFP|RFQ|RFI|IFB|ITB|SOLICITATION|BID)(?:\s+(?:NO\.?|NUMBER))?\s*[:#-]?\s*([A-Z0-9]+(?:[-/][A-Z0-9]+)*|\d{3,8})\b/i);
+  return m?m[1].toUpperCase().replaceAll("/","-"):"";
+}
+function sameOpportunity(a,b){
+  const aid=opportunitySolicitationId(a),bid=opportunitySolicitationId(b);
+  if(aid&&bid&&aid===bid&&opportunitySimilarity(a.title,b.title)>=.3)return true;
+  const ad=String(a.deadline||"").slice(0,10),bd=String(b.deadline||"").slice(0,10);
+  const aq=String(a.qa_deadline||"").slice(0,10),bq=String(b.qa_deadline||"").slice(0,10);
+  const geoA=String(a.geography||"").toLowerCase(),geoB=String(b.geography||"").toLowerCase();
+  if(ad&&ad===bd&&aq&&aq===bq&&opportunitySimilarity(a.title,b.title)>=.45)return true;
+  if(ad&&ad===bd&&geoA&&geoA===geoB&&opportunitySimilarity(a.title,b.title)>=.58)return true;
+  return false;
+}
+function dedupeOpportunityList(items){
+  const groups=[];
+  items.forEach(o=>{
+    const g=groups.find(x=>sameOpportunity(x[0],o));
+    if(g)g.push(o);else groups.push([o]);
+  });
+  const statusRank={won:6,submitted:5,pursue:4,review:3,pass:2,lost:1};
+  return groups.map(g=>{
+    g.sort((a,b)=>(statusRank[b.pursuit_status]||0)-(statusRank[a.pursuit_status]||0)||Number(b.fit_score||0)-Number(a.fit_score||0)||new Date(b.updated_at||b.created_at)-new Date(a.updated_at||a.created_at));
+    const best=Object.assign({},g[0]);
+    best._duplicate_count=g.length;
+    best.fit_score=Math.max(...g.map(x=>Number(x.fit_score||0)));
+    best.requirements=Array.from(new Set(g.flatMap(x=>Array.isArray(x.requirements)?x.requirements:[]).map(x=>typeof x==="string"?x:JSON.stringify(x))));
+    const longest=(key)=>g.map(x=>x[key]||"").sort((a,b)=>String(b).length-String(a).length)[0]||best[key];
+    best.summary=longest("summary");
+    best.recommendation=longest("recommendation");
+    return best;
+  });
+}
 function sortOpportunities(items,sort){
   const list=items.slice();
   list.sort((a,b)=>{
@@ -342,7 +388,8 @@ function opportunityControls(){
 window.setOppStatusFilter=v=>{state.oppStatus=v;render()};
 window.setOppSort=v=>{state.oppSort=v;render()};
 function opportunities(){
-  const all=state.data.opportunities||[];
+  const raw=state.data.opportunities||[];
+  const all=dedupeOpportunityList(raw);
   const items=sortOpportunities(filterOpportunities(all,state.oppStatus),state.oppSort);
   return '<div class="page-intro"><div class="page-icon">◆</div><div><h2>Opportunities</h2><p>Revenue opportunities that require an actual pursuit decision. The RFP or source, deadlines, fit analysis and next steps live here.</p></div></div>'+
   '<div class="panel opportunities-panel"><div class="opp-toolbar"><div><div class="section-label">OPPORTUNITY PIPELINE</div><div class="muted">'+items.length+' of '+all.length+' shown</div></div>'+opportunityControls()+'</div>'+
