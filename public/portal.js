@@ -106,9 +106,8 @@ function supportingTacticsHtml(a,tactics){
   const rows=tactics.slice(0,5).map(function(t,index){
     const text=typeof t==="string"?t:JSON.stringify(t);
     const type=tacticArtifactType(text);
-    const existing=artifacts.find(x=>x.tactic_key&&x.status&&x.title&&String(x.title)===text);
-    const anyForIndex=artifacts.find(x=>String(x.title)===text);
-    const artifact=existing||anyForIndex;
+    const tacticKey=String(index)+":"+text.toLowerCase().slice(0,500);
+    const artifact=artifacts.find(x=>String(x.tactic_key)===tacticKey);
     const button=artifact
       ?'<button class="btn small" disabled>'+(artifact.status==="generating"?"Building…":"Built")+'</button>'
       :'<button class="btn small tactic-btn" onclick="buildTactic('+a.id+','+index+',\''+encodeURIComponent(text)+'\',\''+type+'\')">'+esc(tacticButtonLabel(type))+'</button>';
