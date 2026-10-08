@@ -70,13 +70,18 @@ function actionCard(a){
   let body=p.body?'<div class="code">'+esc(p.body)+'</div>':"";
   let buttons="";
   if(a.status==="proposed"){
-    buttons='<div class="actions"><button class="btn gold small" onclick="approveAction('+a.id+')">Approve / Execute</button>'+
+    buttons='<div class="actions"><button class="btn gold small" onclick="approveAction('+a.id+')">Execute or Queue</button>'+
     '<button class="btn small danger" onclick="dismissAction('+a.id+')">Dismiss</button></div>';
+  }else if(a.status==="requested"){
+    buttons='<div class="actions"><button class="btn gold small" onclick="setActionWorkflow('+a.id+',&quot;in_progress&quot;)">Start work</button><button class="btn small" onclick="setActionWorkflow('+a.id+',&quot;completed&quot;)">Mark complete</button></div>';
+  }else if(a.status==="in_progress"){
+    buttons='<div class="actions"><button class="btn gold small" onclick="setActionWorkflow('+a.id+',&quot;completed&quot;)">Mark complete</button></div>';
   }
+  const owner=a.assigned_to?'<div class="admin-owner"><b>Owner:</b> '+esc(a.assigned_to)+'</div>':"";
   return '<article class="action"><div class="row"><div><div class="signal-title">'+esc(a.title)+'</div>'+
   '<div class="meta"><span>'+esc(a.client_name||"")+'</span><span>•</span><span class="pill action">'+esc(nice(a.action_type))+'</span><span>•</span><span>'+ago(a.created_at)+'</span></div></div>'+
   '<span class="pill">'+esc(nice(a.status))+'</span></div>'+
-  (a.rationale?'<p class="muted">'+esc(a.rationale)+'</p>':"")+body+buttons+'</article>';
+  (a.rationale?'<p class="muted">'+esc(a.rationale)+'</p>':"")+owner+body+buttons+'</article>';
 }
 
 function opportunityDate(value){
@@ -190,14 +195,18 @@ function actionsView(){
   const all=scoped(state.data.actions);
   const priority=all.filter(function(a){return a.action_scope==="priority"&&!a.superseded});
   const raw=all.filter(function(a){return a.action_scope!=="priority"});
-  const proposed=priority.filter(function(a){return a.status==="proposed"}).sort(function(a,b){return Number(b.priority_score||0)-Number(a.priority_score||0)});
-  const history=priority.filter(function(a){return a.status!=="proposed"});
+  const decisions=priority.filter(function(a){return a.status==="proposed"}).sort(function(a,b){return Number(b.priority_score||0)-Number(a.priority_score||0)});
+  const requested=priority.filter(function(a){return a.status==="requested"});
+  const progress=priority.filter(function(a){return a.status==="in_progress"});
+  const completed=priority.filter(function(a){return a.status==="completed"||a.status==="executed"});
   const client=currentClient();
-  return '<div class="panel"><div class="panel-head"><div><h2>Action Center</h2><div class="muted">Client-facing actions are synthesized across intelligence programs. Raw monitor suggestions stay internal unless they rise into the priority list.</div></div>'+
+  return '<div class="panel"><div class="panel-head"><div><h2>Action Center</h2><div class="muted">This is the managed work queue. Client decisions do not count as completed work. Requested items stay here until Lucid Logic or a connected system actually finishes them.</div></div>'+
   (client?'<button class="btn gold small" onclick="rebuildPriorityActions('+client.id+')">Rebuild priority actions</button>':'')+'</div>'+
-  '<div class="admin-action-summary"><div><b>'+proposed.length+'</b><span>Priority actions</span></div><div><b>'+raw.filter(function(a){return a.status==="proposed"}).length+'</b><span>Raw suggestions hidden from client</span></div></div>'+
-  '<h3 style="margin-top:22px">Priority actions</h3>'+(proposed.map(actionCard).join("")||'<div class="empty">No priority actions yet.</div>')+
-  (history.length?'<h3 style="margin-top:22px">Priority action history</h3>'+history.map(actionCard).join(""):'')+
+  '<div class="admin-action-summary"><div><b>'+decisions.length+'</b><span>Awaiting client decision</span></div><div><b>'+(requested.length+progress.length)+'</b><span>Managed work open</span></div></div>'+
+  '<h3 style="margin-top:22px">Awaiting decision</h3>'+(decisions.map(actionCard).join("")||'<div class="empty">None</div>')+
+  '<h3 style="margin-top:22px">Requested from Lucid Logic</h3>'+(requested.map(actionCard).join("")||'<div class="empty">None</div>')+
+  '<h3 style="margin-top:22px">In progress</h3>'+(progress.map(actionCard).join("")||'<div class="empty">None</div>')+
+  (completed.length?'<h3 style="margin-top:22px">Actually completed</h3>'+completed.map(actionCard).join(""):'')+
   '<details class="raw-actions"><summary>Internal raw suggestions ('+raw.length+')</summary><div class="muted raw-help">These are monitor-level ideas and are not shown in the client portal. They feed the action-synthesis layer.</div>'+raw.map(actionCard).join("")+'</details></div>';
 }
 window.rebuildPriorityActions=async function(clientId){
@@ -495,7 +504,14 @@ window.generateAction=async function(signal_id,action_type){
   try{await api("/api/actions/generate",{method:"POST",body:JSON.stringify({signal_id:signal_id,action_type:action_type})});toast("Action generated");await load()}catch(e){toast(e.message)}
 };
 window.approveAction=async function(id){
-  try{const r=await api("/api/actions/"+id+"/approve",{method:"POST",body:"{}"});toast(r.message||"Approved");await load()}catch(e){toast(e.message)}
+  try{const r=await api("/api/actions/"+id+"/approve",{method:"POST",body:"{}"});toast(r.message||"Action updated");await load()}catch(e){toast(e.message)}
+};
+window.setActionWorkflow=async function(id,status){
+  try{
+    await api("/api/actions/"+id+"/status",{method:"PATCH",body:JSON.stringify({status:status})});
+    toast(status==="in_progress"?"Marked in progress":status==="completed"?"Marked complete":"Action updated");
+    await load();
+  }catch(e){toast(e.message)}
 };
 window.dismissAction=async function(id){
   try{await api("/api/actions/"+id+"/dismiss",{method:"POST",body:"{}"});toast("Dismissed");await load()}catch(e){toast(e.message)}
