@@ -262,7 +262,7 @@ async function ensurePriorityActionsFresh(clientId,force=false){
   return synthesizeClientActions(clientId);
 }
 async function bootstrapPriorityActions(){
-  const q=await pool.query("select c.id from intel_clients c where c.status='active' and exists(select 1 from intel_signals s where s.client_id=c.id) and not exists(select 1 from intel_actions a where a.client_id=c.id and a.action_scope='priority' and a.superseded=false)");
+  const q=await pool.query("select c.id from intel_clients c where c.status='active' and exists(select 1 from intel_signals s where s.client_id=c.id) and (not exists(select 1 from intel_actions a where a.client_id=c.id and a.action_scope='priority' and a.superseded=false) or exists(select 1 from intel_actions a where a.client_id=c.id and a.action_scope='priority' and a.superseded=false and a.status='proposed' and a.client_step is null))");
   for(const row of q.rows){
     try{await synthesizeClientActions(row.id)}catch(e){app.log.error({err:e,clientId:row.id},"priority action bootstrap failed")}
   }
