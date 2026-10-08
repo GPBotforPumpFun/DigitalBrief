@@ -181,7 +181,7 @@ function hasOpportunityProgram(){
 function overview(){
   const d=state.data;
   const hasOpp=hasOpportunityProgram();
-  const open=hasOpp?d.opportunities.filter(o=>o.pursuit_status!=="pass"):[];
+  const open=hasOpp?d.opportunities.filter(o=>!["pass","won","lost"].includes(o.pursuit_status)):[];
   const pending=d.actions.filter(a=>a.status==="proposed");
   const managed=d.actions.filter(a=>a.status==="requested"||a.status==="in_progress");
   const intelSignals=d.signals.filter(sig=>sig.program_type!=="opportunity");
@@ -233,7 +233,7 @@ function sortOpportunities(items,sort){
     if(sort==="newest") return new Date(b.created_at)-new Date(a.created_at);
     if(sort==="oldest") return new Date(a.created_at)-new Date(b.created_at);
     if(sort==="status"){
-      const rank={pursue:0,review:1,pass:2};
+      const rank={pursue:0,submitted:1,review:2,won:3,lost:4,pass:5};
       const d=(rank[a.pursuit_status]??9)-(rank[b.pursuit_status]??9);
       if(d!==0)return d;
     }
