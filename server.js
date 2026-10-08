@@ -197,9 +197,9 @@ async function deliverySettings(clientId){
   const q=await pool.query("select brief_enabled,urgent_enabled from intel_delivery_settings where client_id=$1",[clientId]);
   return q.rows[0]||{brief_enabled:true,urgent_enabled:true};
 }
-async function briefDataForUser(user){
+async function briefDataForUser(user,options={}){
   const last=await pool.query("select sent_at from intel_brief_deliveries where user_id=$1 and status='sent' order by sent_at desc limit 1",[user.id]);
-  const since=last.rows[0]?.sent_at||new Date(Date.now()-24*3600000);
+  const since=options.forceHours?new Date(Date.now()-Number(options.forceHours)*3600000):(last.rows[0]?.sent_at||new Date(Date.now()-24*3600000));
   const all=await Promise.all([
     pool.query("select s.*,p.name program_name,p.program_type from intel_signals s join intel_programs p on p.id=s.program_id where s.client_id=$1 and s.client_visible=true and p.client_visible=true and p.program_type<>'opportunity' and s.created_at>$2 order by s.importance desc,s.created_at desc limit 12",[user.client_id,since]),
     pool.query("select a.*,p.name program_name,p.program_type,s.title source_signal_title,s.what_changed source_what_changed,s.why_it_matters source_why_it_matters,s.source_name source_name,s.source_url source_url,s.importance source_importance,s.confidence source_confidence,s.metadata source_metadata from intel_actions a left join intel_programs p on p.id=a.program_id left join intel_signals s on s.id=a.signal_id where a.client_id=$1 and a.status='proposed' and (p.id is null or p.client_visible=true) order by coalesce(s.importance,0) desc,coalesce(s.confidence,0) desc,a.created_at asc limit 12",[user.client_id]),
@@ -318,7 +318,7 @@ function briefText(user,client,data){
   lines.push("","Read in email. Act in the portal.","Open workspace: "+deepLink(user,"overview"));
   return lines.filter(Boolean).join("\n");
 }
-async function sendDailyBriefs(onlyClientId=null){
+async function sendDailyBriefs(onlyClientId=null,options={}){
   const cfg=await getEmailConfig();
   if(!cfg.key||!cfg.from) return {sent:0,skipped:true,reason:"email_not_configured"};
   const args=[],where=["u.active=true","u.brief_recipient=true","c.status='active'"];
@@ -326,7 +326,7 @@ async function sendDailyBriefs(onlyClientId=null){
   const q=await pool.query("select u.id,u.client_id,u.email,u.name,c.name client_name from intel_client_users u join intel_clients c on c.id=u.client_id left join intel_delivery_settings d on d.client_id=c.id where "+where.join(" and ")+" and coalesce(d.brief_enabled,true)=true order by u.client_id,u.id",args);
   const results=[];
   for(const user of q.rows){
-    const data=await briefDataForUser(user);
+    const data=await briefDataForUser(user,options);
     const client={id:user.client_id,name:user.client_name};
     const attention=data.actions.length+data.opportunities.length;
     const subject=(attention?attention+" item"+(attention===1?"":"s")+" need your attention | ":"")+client.name+" Daily Intelligence Brief";
@@ -754,7 +754,10 @@ app.patch("/api/clients/:id/delivery",async function(req,reply){
   return r.rows[0];
 });
 app.post("/api/clients/:id/send-brief",async function(req,reply){
-  try{return await sendDailyBriefs(Number(req.params.id))}catch(e){return reply.code(500).send({error:e.message})}
+  try{
+    const hours=Math.min(168,Math.max(1,Number((req.body||{}).force_hours||24)));
+    return await sendDailyBriefs(Number(req.params.id),{forceHours:hours});
+  }catch(e){return reply.code(500).send({error:e.message})}
 });
 app.post("/api/opportunities/:id/status",async function(req,reply){
   const status=String((req.body||{}).status||"");
