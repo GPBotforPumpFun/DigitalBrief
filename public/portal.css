@@ -1225,3 +1225,219 @@ body.modal-open{overflow:hidden}
     max-width:100%;
   }
 }
+
+/* Intelligence readability: larger type, less copy, scan-first cards. */
+.intel-filters{
+  gap:10px;
+  margin-bottom:18px;
+}
+.intel-filter{
+  padding:10px 14px;
+  font-size:13px;
+}
+.intel-filter span{
+  min-width:22px;
+  height:22px;
+  font-size:10px;
+}
+.intel-feed{
+  display:grid;
+  gap:18px;
+}
+.compact-intel{
+  display:block;
+  margin:0;
+  border:1px solid #d5dce4;
+  border-left:5px solid #aeb6c2;
+  border-radius:14px;
+  background:#fff;
+  box-shadow:0 4px 14px rgba(22,30,40,.035);
+  overflow:hidden;
+}
+.compact-intel.priority{border-left-color:var(--gold)}
+.compact-intel .intel-summary-main{
+  padding:18px 20px 14px;
+}
+.intel-card-top{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:18px;
+}
+.compact-intel .intel-kicker{
+  font-size:10px;
+  margin-bottom:6px;
+}
+.compact-intel h3{
+  margin:0;
+  font:700 20px/1.3 "Space Grotesk";
+  color:#151b23;
+}
+.compact-intel .confidence{
+  flex:none;
+  min-width:44px;
+  height:34px;
+  display:grid;
+  place-items:center;
+  padding:0 9px;
+  font-size:11px;
+  border-radius:9px;
+}
+.intel-what{
+  margin:10px 0 0;
+  font-size:14px;
+  line-height:1.55;
+  color:#414b57;
+  display:-webkit-box;
+  -webkit-line-clamp:2;
+  -webkit-box-orient:vertical;
+  overflow:hidden;
+}
+.intel-why-line{
+  margin-top:10px;
+  padding:9px 11px;
+  background:#fff7df;
+  border-left:4px solid var(--gold);
+  font-size:13px;
+  line-height:1.45;
+  color:#4f4732;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.intel-inline-meta{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+  margin-top:10px;
+}
+.intel-inline-meta span{
+  max-width:300px;
+  padding:5px 8px;
+  border-radius:999px;
+  background:#f1f4f7;
+  color:#59636f;
+  font-size:10.5px;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.intel-inline-meta b{color:#2f3740}
+.intel-card-footer{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  padding:10px 14px 11px 20px;
+  background:#f8fafb;
+  border-top:1px solid #e6ebef;
+  color:#7d8792;
+  font-size:11px;
+}
+.intel-card-footer>div{
+  display:flex;
+  gap:8px;
+}
+.intel-card-footer .btn{
+  min-height:34px;
+  padding:7px 11px;
+  font-size:11px;
+}
+
+/* Full intelligence detail in a modal instead of dumping everything into the feed. */
+.intel-modal-backdrop{
+  position:fixed;
+  inset:0;
+  z-index:1000;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding:28px;
+  background:rgba(10,16,24,.58);
+  backdrop-filter:blur(3px);
+}
+.intel-modal{
+  width:min(920px,calc(100vw - 56px));
+  max-height:calc(100vh - 56px);
+  display:flex;
+  flex-direction:column;
+  overflow:hidden;
+  background:#fff;
+  border-radius:18px;
+  box-shadow:0 24px 70px rgba(0,0,0,.28);
+}
+.intel-modal-head{
+  display:flex;
+  justify-content:space-between;
+  gap:18px;
+  padding:22px 24px;
+  background:#f2f5f8;
+  border-bottom:1px solid #dce3ea;
+}
+.intel-modal-head h2{
+  margin:4px 0 0;
+  font:700 24px/1.3 "Space Grotesk";
+}
+.intel-modal-body{
+  padding:24px;
+  overflow:auto;
+}
+.intel-modal-section{
+  margin-bottom:20px;
+}
+.intel-modal-section>span{
+  display:block;
+  margin-bottom:7px;
+  font-size:10px;
+  font-weight:800;
+  letter-spacing:.09em;
+  color:#7d8792;
+}
+.intel-modal-section p{
+  margin:0;
+  font-size:16px;
+  line-height:1.65;
+  color:#303944;
+}
+.intel-modal .intel-meta{
+  margin:0 0 20px;
+  gap:10px;
+}
+.intel-modal .intel-meta div{
+  padding:11px 12px;
+}
+.intel-modal .intel-meta span{
+  font-size:9px;
+}
+.intel-modal .intel-meta b{
+  font-size:13px;
+}
+.intel-modal-section.matter{
+  padding:14px 16px;
+  background:#fff5d7;
+  border-left:5px solid var(--gold);
+}
+.intel-modal-footer{
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  gap:10px;
+  padding:14px 20px;
+  background:#f5f7f9;
+  border-top:1px solid #dce2e8;
+  color:#6f7984;
+  font-size:12px;
+}
+.intel-modal-footer>span{margin-right:auto}
+
+@media(max-width:720px){
+  .compact-intel .intel-summary-main{padding:15px}
+  .compact-intel h3{font-size:18px}
+  .intel-what{font-size:13px}
+  .intel-why-line{white-space:normal}
+  .intel-modal{width:calc(100vw - 28px);max-height:calc(100vh - 28px)}
+  .intel-modal-backdrop{padding:14px}
+  .intel-modal-head,.intel-modal-body{padding:16px}
+  .intel-modal-head h2{font-size:20px}
+  .intel-modal-section p{font-size:15px}
+}
