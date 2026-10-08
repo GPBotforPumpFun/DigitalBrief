@@ -28,3 +28,153 @@
 .client-step{background:#f8f9fb;border:1px solid #e2e6eb;border-radius:9px;padding:10px 12px;margin-top:10px}.client-step span{display:block;font-size:8px;font-weight:800;letter-spacing:.09em;color:#7d8590;margin-bottom:4px}.client-step b{display:block;font-size:12px;line-height:1.45}.managed-status.client-progress{background:#f5f7ff;border-color:#dfe5ff}.opportunity-card .actions .btn[disabled]{opacity:.65;cursor:default}
 
 .tactic-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center;padding:9px 0;border-top:1px solid #e8ebef}.tactic-row:first-of-type{border-top:0}.tactic-copy{font-size:11px;line-height:1.45;color:#4f5864}.tactic-btn{white-space:nowrap}.action-work-products{margin-top:12px;padding-top:12px;border-top:1px dashed #d8dde4}.action-artifact{border:1px solid #e0e5ea;border-radius:10px;background:#fafbfc;margin-top:8px;padding:12px}.action-artifact.generating{display:flex;align-items:center;justify-content:space-between}.action-artifact.generating b,.action-artifact.failed b{display:block;font-size:12px}.action-artifact.generating span,.action-artifact.failed span{display:block;font-size:10px;color:#68717d;margin-top:3px}.action-artifact.ready summary{cursor:pointer;font-weight:800;font-size:12px}.action-artifact.ready summary span{font-size:9px;color:#15734f;background:#e8f6ef;border-radius:999px;padding:4px 6px;margin-left:5px}.action-artifact-body{font-size:11px;line-height:1.55;background:#fff;border:1px solid #e7eaee;border-radius:8px;padding:12px;margin:10px 0;max-height:520px;overflow:auto}.action-artifact-body a{color:#315bcc;font-weight:700;text-decoration:none}@media(max-width:720px){.tactic-row{grid-template-columns:1fr}.tactic-row .btn{justify-self:start}}
+
+/* Visual hierarchy pass: reduce white-on-white density and make work blocks easier to scan. */
+.action-card{
+  border:1px solid #d8dee7;
+  border-radius:16px;
+  box-shadow:0 6px 18px rgba(22,29,37,.035);
+  margin-bottom:18px;
+  padding:20px;
+}
+.action-card.needs-action{border-left:5px solid var(--gold)}
+.action-card .action-main>.row{padding-bottom:12px;border-bottom:1px solid #edf0f3}
+.action-card .action-desc{font-size:13px;line-height:1.55;margin:13px 0}
+.action-outcome{background:#eef8f2;border-color:#d7eadf}
+.action-context{background:#f1f5fb;border-color:#dbe4f0}
+.client-step{background:#fff8e8;border-color:#efdfb2}
+.supporting-tactics{
+  margin-top:14px;
+  padding:14px;
+  background:#f6f8fb;
+  border:1px solid #dde3ea;
+  border-radius:12px;
+}
+.supporting-tactics>span{
+  margin-bottom:8px;
+  color:#5f6975;
+}
+.tactic-row{
+  grid-template-columns:minmax(0,1fr) auto;
+  gap:18px;
+  align-items:center;
+  padding:12px 13px;
+  margin-top:8px;
+  border:1px solid #e1e6ec;
+  border-radius:10px;
+  background:#fff;
+}
+.tactic-row:first-of-type{border-top:1px solid #e1e6ec}
+.tactic-copy{font-size:12px;line-height:1.45;color:#313843;font-weight:600}
+.tactic-row .btn{min-width:118px;justify-content:center}
+.action-work-products{
+  background:#fff;
+  border:1px solid #e0e5eb;
+  border-radius:10px;
+  padding:12px;
+}
+.action-artifact{background:#fff}
+
+/* Opportunities: make each RFP read as its own discrete workspace. */
+.opportunities-panel{
+  background:#eef2f6;
+  border-color:#d8dee7;
+  padding:18px;
+}
+.opportunity-card{
+  position:relative;
+  overflow:hidden;
+  border:1px solid #cfd7e2;
+  border-radius:16px;
+  padding:0 22px 22px;
+  margin:0 0 28px;
+  background:#fff;
+  box-shadow:0 8px 24px rgba(20,28,38,.055);
+}
+.opportunity-card:last-child{margin-bottom:0}
+.opportunity-card:before{
+  content:"";
+  position:absolute;
+  left:0;top:0;bottom:0;
+  width:5px;
+  background:#c7ced8;
+}
+.opportunity-card.status-review:before{background:var(--gold)}
+.opportunity-card.status-pursue:before{background:#2c8c62}
+.opportunity-card.status-submitted:before{background:#3d6fd4}
+.opportunity-card.status-won:before{background:#2c8c62}
+.opportunity-card.status-lost:before,.opportunity-card.status-pass:before{background:#9aa3ae}
+.opp-card-head{
+  margin:0 -22px 18px;
+  padding:18px 22px 16px;
+  background:linear-gradient(180deg,#f9fafc 0%,#f5f7fa 100%);
+  border-bottom:1px solid #e1e6ec;
+}
+.opportunity-card.status-pursue .opp-card-head{background:linear-gradient(180deg,#f2faf6 0%,#edf7f1 100%)}
+.opportunity-card.status-submitted .opp-card-head{background:linear-gradient(180deg,#f2f6fd 0%,#edf3fc 100%)}
+.opportunity-card h3{font-size:20px;line-height:1.25;margin:3px 0 0}
+.opportunity-card>p{font-size:13px;line-height:1.58;color:#3d4652;margin:0 0 15px}
+.opp-meta{gap:10px;margin:15px 0 18px}
+.opp-meta div{
+  background:#f5f7fa;
+  border:1px solid #e5e9ee;
+  border-radius:10px;
+  padding:11px 12px;
+}
+.opp-meta b{font-size:12px;line-height:1.35}
+.opportunity-card .why{
+  margin:16px 0;
+  padding:13px 15px;
+  background:#fff8e8;
+  border-left:4px solid var(--gold);
+  border-radius:0 10px 10px 0;
+}
+.opp-req{
+  background:#f8fafc;
+  border:1px solid #e2e7ed;
+  border-radius:10px;
+  padding:13px 15px;
+  margin-top:14px;
+}
+.opp-req>b{display:block;margin-bottom:7px}
+.opp-req ul{margin:0;padding-left:18px}
+.opp-action-explainer{margin-top:16px;background:#eef5ff;border-color:#d8e5f6}
+.opp-actions-bar{
+  margin:18px -22px -22px;
+  padding:14px 22px;
+  background:#f7f9fb;
+  border-top:1px solid #e1e6ec;
+  display:flex;
+  gap:9px;
+  flex-wrap:wrap;
+}
+.pursuit-work-products{
+  margin:18px 0 0;
+  padding:15px;
+  background:#f6f8fb;
+  border:1px solid #dde3ea;
+  border-radius:12px;
+}
+.opp-artifact{background:#fff}
+
+/* Stronger spacing between major Next Steps sections. */
+.action-layout>section{
+  padding:18px;
+  background:#eef2f6;
+  border:1px solid #dce2e9;
+  border-radius:16px;
+}
+.action-section-head{margin-bottom:14px}
+.action-section-head h2{font-size:21px}
+
+@media(max-width:900px){
+  .opportunities-panel{padding:12px}
+  .opportunity-card{padding:0 16px 18px;margin-bottom:20px}
+  .opp-card-head{margin:0 -16px 16px;padding:16px}
+  .opp-actions-bar{margin:16px -16px -18px;padding:13px 16px}
+}
+@media(max-width:720px){
+  .tactic-row{grid-template-columns:1fr;gap:9px}
+  .tactic-row .btn{min-width:0;justify-self:start}
+  .action-layout>section{padding:12px}
+}
