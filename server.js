@@ -59,6 +59,8 @@ const schema = [
 "alter table intel_actions add column if not exists assigned_to text",
 "alter table intel_actions add column if not exists requested_at timestamptz",
 "alter table intel_actions add column if not exists completed_at timestamptz",
+"alter table intel_actions add column if not exists owner_type text not null default 'client'",
+"alter table intel_actions add column if not exists client_step text",
 "alter table intel_opportunities add column if not exists pursuit_owner text",
 "alter table intel_opportunities add column if not exists pursued_at timestamptz",
 "create table if not exists intel_opportunity_artifacts(id serial primary key,opportunity_id int not null references intel_opportunities(id) on delete cascade,client_id int not null references intel_clients(id) on delete cascade,artifact_type text not null,title text,body text,notes text,status text not null default 'generating',error text,created_at timestamptz not null default now(),updated_at timestamptz not null default now())",
@@ -231,7 +233,7 @@ async function synthesizeClientActions(clientId){
     "RECENT INTELLIGENCE: "+JSON.stringify(signals)+".\n"+
     "RAW ACTION IDEAS FROM INDIVIDUAL MONITORS: "+JSON.stringify(raw)+".\n"+
     "Return ONLY JSON with actions. Create 3 to 5 actions maximum, and fewer if fewer are truly important. These are the client's PRIMARY business actions, not a content-production checklist. Prioritize: (1) revenue generation and sales opportunities, (2) material risk/compliance response, (3) retention/account response, (4) reputation/competitive response. A website page, blog post or social post is usually a SUPPORTING TACTIC, not the primary action. If intelligence creates a sellable service opportunity, the primary action should say who to contact and what offer to make. Example: if DOJ/ADA enforcement increases demand and the client can sell accessibility remediation, prefer 'Offer ADA accessibility audits to existing clients and qualified prospects' over 'Publish an ADA page.' Supporting content can be listed under supporting_tactics. Consolidate overlapping signals into one action. Do not create an action merely because a raw monitor suggested one.\n"+
-    "Each action must include: title, action_type (client_outreach, prospect_outreach, service_offer, risk_response, account_followup, reputation_response, website_post, social_post, email_draft, brief, other), category (revenue, risk, retention, reputation, competitive, operational), priority_score 1-100, business_outcome, target_audience, rationale, supporting_tactics array, and source_signal_ids array using only the supplied signal IDs. Priority scores above 80 should be rare and mean it deserves attention now.";
+    "Each action must include: title, action_type (client_outreach, prospect_outreach, service_offer, risk_response, account_followup, reputation_response, website_post, social_post, email_draft, brief, other), category (revenue, risk, retention, reputation, competitive, operational), priority_score 1-100, business_outcome, target_audience, rationale, supporting_tactics array, source_signal_ids array using only the supplied signal IDs, owner_type (client or lucid_logic), and client_step. Ownership rules: default to client when the client's own team must act, such as contacting customers/prospects, making a pursuit decision, gathering information, handling internal compliance, or submitting a proposal. Use lucid_logic only when the task is specifically digital execution Lucid Logic can perform for the client, such as updating a managed website, preparing/publishing digital content, or other work that clearly belongs to Lucid Logic. Do not route general business actions to Lucid Logic. client_step must plainly say what the client should do next or what they are asking Lucid Logic to do. Priority scores above 80 should be rare and mean it deserves attention now.";
 
   const out=parseJson(await openai(prompt,false));
   if(!out||!Array.isArray(out.actions)) throw new Error("Action synthesis response did not contain actions");
@@ -243,10 +245,11 @@ async function synthesizeClientActions(clientId){
   for(const a of out.actions.slice(0,5)){
     const ids=Array.isArray(a.source_signal_ids)?a.source_signal_ids.map(Number).filter(id=>signalMap.has(id)):[];
     const first=ids.length?signalMap.get(ids[0]):null;
-    const payload={supporting_tactics:Array.isArray(a.supporting_tactics)?a.supporting_tactics:[],business_outcome:a.business_outcome||"",target_audience:a.target_audience||"",source_signal_ids:ids};
-    await pool.query("insert into intel_actions(signal_id,client_id,program_id,action_type,title,rationale,payload,action_scope,priority_score,action_category,business_outcome,target_audience,source_signal_ids,superseded) values($1,$2,$3,$4,$5,$6,$7,'priority',$8,$9,$10,$11,$12,false)",[
+    const owner=(a.owner_type==="lucid_logic")?"lucid_logic":"client";
+    const payload={supporting_tactics:Array.isArray(a.supporting_tactics)?a.supporting_tactics:[],business_outcome:a.business_outcome||"",target_audience:a.target_audience||"",source_signal_ids:ids,client_step:a.client_step||""};
+    await pool.query("insert into intel_actions(signal_id,client_id,program_id,action_type,title,rationale,payload,action_scope,priority_score,action_category,business_outcome,target_audience,source_signal_ids,superseded,owner_type,client_step) values($1,$2,$3,$4,$5,$6,$7,'priority',$8,$9,$10,$11,$12,false,$13,$14)",[
       first?first.id:null,clientId,first?first.program_id:null,a.action_type||"other",a.title,a.rationale||"",JSON.stringify(payload),
-      Math.max(1,Math.min(100,Number(a.priority_score||50))),a.category||"general",a.business_outcome||null,a.target_audience||null,JSON.stringify(ids)
+      Math.max(1,Math.min(100,Number(a.priority_score||50))),a.category||"general",a.business_outcome||null,a.target_audience||null,JSON.stringify(ids),owner,a.client_step||null
     ]);
     created++;
   }
@@ -546,7 +549,8 @@ async function init(){
   await pool.query("insert into intel_opportunities(signal_id,client_id,program_id,title,summary,source_name,source_url,document_url,opportunity_type,fit_score,recommendation) select s.id,s.client_id,s.program_id,s.title,s.what_changed,s.source_name,s.source_url,s.source_url,'rfp',least(100,greatest(0,s.confidence)),s.why_it_matters from intel_signals s join intel_programs p on p.id=s.program_id where p.program_type='opportunity' and not exists(select 1 from intel_opportunities o where o.signal_id=s.id)");
   await repairOpportunityDates();
   await pool.query("update intel_actions set status='requested',assigned_to=coalesce(assigned_to,'Lucid Logic'),requested_at=coalesce(requested_at,executed_at,created_at),executed_at=null where status in ('approved','executed') and action_type not in ('website_post','social_post')");
-  await pool.query("update intel_actions set superseded=true where rationale='Created from client opportunity decision workflow' and action_type in ('questions','proposal')");
+  await pool.query("update intel_actions a set superseded=true where a.action_type in ('questions','proposal') and (a.rationale='Created from client opportunity decision workflow' or exists(select 1 from intel_opportunities o where o.signal_id=a.signal_id))");
+  await pool.query("delete from intel_opportunity_artifacts where id in (select id from (select id,row_number() over(partition by opportunity_id,artifact_type order by case when status='ready' then 0 when status='generating' then 1 else 2 end,updated_at desc,id desc) rn from intel_opportunity_artifacts) x where rn>1)");
   await pool.query("delete from intel_client_sessions where expires_at<=now()");
   setImmediate(function(){bootstrapPriorityActions().catch(function(e){app.log.error({err:e},"priority action bootstrap failed")})});
 }
@@ -792,10 +796,11 @@ app.post("/api/portal/opportunities/:id/status",async function(req,reply){
   const u=await requirePortalUser(req,reply);
   if(!u) return;
   const status=String((req.body||{}).status||"");
-  if(!["review","pursue","pass"].includes(status)) return reply.code(400).send({error:"Invalid status"});
-  const r=await pool.query("update intel_opportunities set pursuit_status=$1,pursuit_owner=case when $1='pursue' then 'Client + Lucid Logic' else pursuit_owner end,pursued_at=case when $1='pursue' then coalesce(pursued_at,now()) else pursued_at end,updated_at=now() where id=$2 and client_id=$3 returning *",[status,Number(req.params.id),u.client_id]);
+  if(!["review","pursue","submitted","won","lost","pass"].includes(status)) return reply.code(400).send({error:"Invalid status"});
+  const r=await pool.query("update intel_opportunities set pursuit_status=$1,pursuit_owner=case when $1 in ('pursue','submitted','won','lost') then 'Client' else pursuit_owner end,pursued_at=case when $1='pursue' then coalesce(pursued_at,now()) else pursued_at end,updated_at=now() where id=$2 and client_id=$3 returning *",[status,Number(req.params.id),u.client_id]);
   if(!r.rows[0]) return reply.code(404).send({error:"Opportunity not found"});
-  return {opportunity:r.rows[0],message:status==="pursue"?"Marked as an active pursuit. Nothing has been submitted. Use the workspace to generate questions or a proposal draft.":status==="pass"?"Moved to Passed. No further pursuit work will be generated unless you change the status.":"Moved back to Review."};
+  const messages={pursue:"Active pursuit. Your team owns the response and submission. Use this workspace to generate questions and a proposal draft.",submitted:"Marked Submitted. This records that your team sent the response externally.",won:"Marked Won.",lost:"Marked Lost.",pass:"Moved to Passed. No further pursuit work is needed.",review:"Moved back to Review."};
+  return {opportunity:r.rows[0],message:messages[status]};
 });
 app.post("/api/portal/opportunities/:id/generate",async function(req,reply){
   const u=await requirePortalUser(req,reply);
@@ -805,6 +810,11 @@ app.post("/api/portal/opportunities/:id/generate",async function(req,reply){
   const q=await pool.query("select o.*,s.what_changed,s.why_it_matters from intel_opportunities o left join intel_signals s on s.id=o.signal_id where o.id=$1 and o.client_id=$2",[Number(req.params.id),u.client_id]);
   const o=q.rows[0];
   if(!o) return reply.code(404).send({error:"Opportunity not found"});
+  const existing=await pool.query("select * from intel_opportunity_artifacts where opportunity_id=$1 and client_id=$2 and artifact_type=$3 and status in ('generating','ready') order by updated_at desc,id desc limit 1",[o.id,u.client_id,type]);
+  if(existing.rows[0]){
+    const a=existing.rows[0];
+    return reply.code(a.status==="generating"?202:200).send({artifactId:a.id,status:a.status,reused:true,message:a.status==="generating"?"That work product is already generating.":"That work product already exists in this opportunity workspace."});
+  }
   const ar=await pool.query("insert into intel_opportunity_artifacts(opportunity_id,client_id,artifact_type,title,status) values($1,$2,$3,$4,'generating') returning *",[o.id,u.client_id,type,type==="proposal"?"Proposal draft":"Questions to clarify"]);
   const artifact=ar.rows[0];
 
@@ -842,13 +852,30 @@ app.post("/api/portal/actions/:id/approve",async function(req,reply){
   const u=await requirePortalUser(req,reply);
   if(!u) return;
   const q=await pool.query("select * from intel_actions where id=$1 and client_id=$2",[Number(req.params.id),u.client_id]);
-  if(!q.rows[0]) return reply.code(404).send({error:"Action not found"});
+  const action=q.rows[0];
+  if(!action) return reply.code(404).send({error:"Action not found"});
+  if(action.owner_type!=="lucid_logic"){
+    const r=await pool.query("update intel_actions set status='in_progress',assigned_to='Your team',requested_at=coalesce(requested_at,now()) where id=$1 returning *",[action.id]);
+    return {status:"in_progress",executed:false,assignedTo:"Your team",message:"Added to Your Next Steps. Your team owns this action. Mark it complete when you have done it.",action:r.rows[0]};
+  }
   try{
-    const result=await executeAction(q.rows[0]);
+    const result=await executeAction(action);
     const status=result.executed?"executed":"requested";
-    await pool.query("update intel_actions set status=$1,assigned_to=$2,requested_at=case when $1='requested' then coalesce(requested_at,now()) else requested_at end,executed_at=case when $3 then now() else executed_at end where id=$4",[status,result.assignedTo||null,result.executed,q.rows[0].id]);
+    await pool.query("update intel_actions set status=$1,assigned_to=$2,requested_at=case when $1='requested' then coalesce(requested_at,now()) else requested_at end,executed_at=case when $3 then now() else executed_at end where id=$4",[status,result.assignedTo||"Lucid Logic",result.executed,action.id]);
     return Object.assign({status:status},result);
   }catch(e){return reply.code(500).send({error:e.message})}
+});
+app.patch("/api/portal/actions/:id/status",async function(req,reply){
+  const u=await requirePortalUser(req,reply);
+  if(!u) return;
+  const status=String((req.body||{}).status||"");
+  if(!["in_progress","completed"].includes(status)) return reply.code(400).send({error:"Invalid status"});
+  const q=await pool.query("select * from intel_actions where id=$1 and client_id=$2",[Number(req.params.id),u.client_id]);
+  const action=q.rows[0];
+  if(!action) return reply.code(404).send({error:"Action not found"});
+  if(action.owner_type==="lucid_logic") return reply.code(403).send({error:"Lucid Logic owns this managed action. Its completion status is controlled from the managed work queue."});
+  const r=await pool.query("update intel_actions set status=$1,assigned_to='Your team',completed_at=case when $1='completed' then now() else completed_at end where id=$2 returning *",[status,action.id]);
+  return {action:r.rows[0],message:status==="completed"?"Marked complete.":"Kept in Your Next Steps."};
 });
 
 app.get("/health",async function(){return {ok:true,service:"Lucid Intelligence OS"}});
