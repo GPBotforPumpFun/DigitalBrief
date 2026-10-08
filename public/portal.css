@@ -903,3 +903,264 @@ html,body{width:100%;max-width:100%;overflow-x:hidden}
   .portal-shell{grid-template-columns:1fr}
   #view{padding-left:12px;padding-right:12px}
 }
+
+/* Executive readability pass: larger type, stronger project separation, modal details. */
+body{font-size:15px}
+.page-intro{padding:16px 18px!important;margin-bottom:16px!important}
+.page-intro h2{font-size:22px!important}
+.page-intro p{font-size:13px!important;line-height:1.45!important}
+.opportunities-panel{
+  background:#e8edf2;
+  padding:20px;
+}
+.opp-toolbar{
+  margin:0 0 18px;
+  padding:0 2px 13px;
+}
+.compact-opportunity{
+  margin-bottom:24px;
+  border:1px solid #cfd7e0;
+  border-left-width:6px;
+  border-radius:14px;
+  box-shadow:0 5px 16px rgba(20,30,42,.06);
+}
+.compact-opportunity:last-child{margin-bottom:0}
+.status-review .opp-summary-row{background:#fffdf7}
+.status-pursue .opp-summary-row{background:#f4faf6}
+.status-submitted .opp-summary-row{background:#f3f7fc}
+.status-won .opp-summary-row{background:#f1faf5}
+.status-pass .opp-summary-row,.status-lost .opp-summary-row{background:#f6f7f8}
+.opp-summary-row{
+  padding:18px 20px 13px;
+  border-bottom:1px solid #e6ebf0;
+}
+.opp-kicker{
+  font-size:10px;
+  margin-bottom:7px;
+}
+.opp-summary-row h3{
+  font-size:20px;
+  line-height:1.3;
+  letter-spacing:-.01em;
+}
+.opp-summary-row p{
+  margin-top:8px;
+  font-size:13px;
+  line-height:1.5;
+}
+.compact-fit{
+  width:58px;
+  height:58px;
+}
+.compact-fit strong{font-size:21px}
+.opp-quick-meta span{
+  padding:10px 14px;
+  font-size:11.5px;
+}
+.opp-recommendation-line{
+  padding:11px 16px;
+  font-size:12.5px;
+  line-height:1.45;
+}
+.compact-opp-bar{
+  padding:12px 16px 14px;
+  background:#f7f9fb;
+}
+.compact-opp-bar .btn{
+  min-height:36px;
+  padding:8px 13px;
+  font-size:11.5px;
+}
+.opp-detail-toggle{
+  font-weight:800;
+  background:#eef2f6!important;
+}
+
+/* Modal keeps detailed material out of the scan view. */
+body.modal-open{overflow:hidden}
+.opp-modal-backdrop{
+  position:fixed;
+  inset:0;
+  z-index:1000;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding:28px;
+  background:rgba(10,16,24,.58);
+  backdrop-filter:blur(3px);
+}
+.opp-modal{
+  width:min(980px,calc(100vw - 56px));
+  max-height:calc(100vh - 56px);
+  display:flex;
+  flex-direction:column;
+  overflow:hidden;
+  background:#fff;
+  border-radius:18px;
+  box-shadow:0 24px 70px rgba(0,0,0,.28);
+}
+.opp-modal-head{
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-start;
+  gap:18px;
+  padding:22px 24px;
+  background:#f3f6f9;
+  border-bottom:1px solid #dbe2e9;
+}
+.opp-modal-head h2{
+  margin:4px 0 0;
+  font:700 24px/1.25 "Space Grotesk";
+  color:#171d24;
+}
+.modal-close{
+  flex:none;
+  width:38px;
+  height:38px;
+  border:0;
+  border-radius:9px;
+  background:#171d24;
+  color:#fff;
+  font-size:26px;
+  line-height:1;
+  cursor:pointer;
+}
+.opp-modal-body{
+  overflow-y:auto;
+  overflow-x:hidden;
+  padding:24px;
+}
+.modal-summary{
+  margin:0 0 18px;
+  font-size:15px;
+  line-height:1.6;
+  color:#404a55;
+}
+.modal-meta{
+  display:grid;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  border:1px solid #dbe2e8;
+  border-radius:12px;
+  overflow:hidden;
+  background:#f7f9fb;
+}
+.modal-meta>div{
+  padding:12px 14px;
+  border-right:1px solid #dbe2e8;
+}
+.modal-meta>div:last-child{border-right:0}
+.modal-meta span,.modal-label,.modal-recommendation span,.modal-owner span{
+  display:block;
+  font-size:9px;
+  font-weight:800;
+  letter-spacing:.09em;
+  text-transform:uppercase;
+  color:#75808c;
+}
+.modal-meta b{
+  display:block;
+  margin-top:5px;
+  font-size:13px;
+  line-height:1.4;
+}
+.modal-recommendation{
+  margin-top:18px;
+  padding:15px 17px;
+  background:#fff3cf;
+  border-left:5px solid var(--gold);
+}
+.modal-recommendation b{
+  display:block;
+  margin-top:5px;
+  font-size:14px;
+  line-height:1.55;
+}
+.modal-owner{
+  display:grid;
+  grid-template-columns:180px 1fr;
+  gap:20px;
+  align-items:center;
+  margin-top:18px;
+  padding:14px 16px;
+  background:#edf4f8;
+  border-left:5px solid #6684a4;
+}
+.modal-owner b{
+  display:block;
+  margin-top:4px;
+  font-size:14px;
+}
+.modal-owner p{
+  margin:0;
+  font-size:13px;
+  line-height:1.5;
+  color:#515c67;
+}
+.modal-section{
+  margin-top:22px;
+  padding-top:18px;
+  border-top:1px solid #dfe5eb;
+}
+.modal-requirements{
+  margin:10px 0 0;
+  padding-left:22px;
+}
+.modal-requirements li{
+  margin:7px 0;
+  font-size:14px;
+  line-height:1.5;
+}
+.opp-modal .opp-artifact{
+  font-size:13px;
+}
+.opp-modal-footer{
+  display:flex;
+  justify-content:flex-end;
+  gap:9px;
+  padding:14px 20px;
+  background:#f5f7f9;
+  border-top:1px solid #dce2e8;
+}
+.opp-modal-footer .btn{
+  font-size:12px;
+}
+
+/* Give each project a visible "lane" without making it huge. */
+.compact-opportunity + .compact-opportunity{
+  position:relative;
+}
+.compact-opportunity + .compact-opportunity:before{
+  content:"";
+  position:absolute;
+  top:-14px;
+  left:10px;
+  right:10px;
+  height:1px;
+  background:#c7d0da;
+}
+
+/* Next Steps readability too. */
+.action-section-head h2{font-size:20px!important}
+.action-summary-row h3{font-size:18px}
+.action-outcome-line{font-size:12.5px}
+.compact-next{font-size:11.5px;padding:9px 11px}
+.compact-owner{font-size:10px}
+.compact-action-bar .btn{font-size:11.5px}
+
+@media(max-width:900px){
+  .opp-modal{width:min(940px,calc(100vw - 28px));max-height:calc(100vh - 28px)}
+  .opp-modal-backdrop{padding:14px}
+  .modal-meta{grid-template-columns:1fr 1fr}
+  .modal-meta>div{border-bottom:1px solid #dbe2e8}
+  .modal-meta>div:nth-child(2){border-right:0}
+  .modal-meta>div:nth-last-child(-n+2){border-bottom:0}
+}
+@media(max-width:720px){
+  body{font-size:14px}
+  .opportunities-panel{padding:12px}
+  .opp-summary-row h3{font-size:18px}
+  .opp-summary-row p{font-size:12px}
+  .opp-modal-head,.opp-modal-body{padding:16px}
+  .opp-modal-head h2{font-size:20px}
+  .modal-owner{grid-template-columns:1fr;gap:6px}
+}
