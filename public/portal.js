@@ -19,7 +19,14 @@ function actionInfo(type){
     email_draft:{label:"Email Draft",icon:"@",desc:"An email prepared for your team to send."},
     outreach:{label:"Outreach Draft",icon:"↗",desc:"A prospect or account outreach draft."},
     brief:{label:"Brief",icon:"B",desc:"A concise intelligence brief."},
-    alert:{label:"Alert",icon:"!",desc:"An item that needs attention."}
+    alert:{label:"Alert",icon:"!",desc:"An item that needs attention."},
+    client_outreach:{label:"Client Outreach",icon:"↗",desc:"Reach out to existing clients with a timely offer or recommendation."},
+    prospect_outreach:{label:"Prospect Outreach",icon:"↗",desc:"Use the intelligence to create a timely sales conversation."},
+    service_offer:{label:"Service Opportunity",icon:"$",desc:"Package this intelligence into a concrete service offer."},
+    risk_response:{label:"Risk Response",icon:"!",desc:"Take a concrete step to reduce material business risk."},
+    account_followup:{label:"Account Follow-up",icon:"@",desc:"Follow up with a specific account based on a trigger event."},
+    reputation_response:{label:"Reputation Response",icon:"★",desc:"Take a concrete action to improve or protect reputation."},
+    other:{label:"Recommended Action",icon:"✓",desc:"A prioritized next step from Lucid Logic."}
   };
   return map[type]||{label:nice(type||"Action"),icon:"✓",desc:"Recommended next step from Lucid Logic."};
 }
@@ -53,10 +60,18 @@ function actionCard(a){
   const body=p.body||p.content||"";
   const note=p.notes||"";
   const pending=a.status==="proposed";
+  const tactics=Array.isArray(p.supporting_tactics)&&p.supporting_tactics.length
+    ?'<div class="supporting-tactics"><span>SUPPORTING TACTICS</span><ul>'+p.supporting_tactics.slice(0,5).map(t=>'<li>'+esc(typeof t==="string"?t:JSON.stringify(t))+'</li>').join("")+'</ul></div>'
+    :"";
+  const context=a.signal_title?'<div class="action-context"><span>SOURCE INTELLIGENCE</span><b>'+esc(a.signal_title)+'</b>'+(a.signal_what_changed?'<p>'+esc(a.signal_what_changed)+'</p>':'')+'</div>':"";
+  const outcome=a.business_outcome||p.business_outcome||"";
+  const audience=a.target_audience||p.target_audience||"";
   return '<article id="action-'+a.id+'" class="action-card '+(pending?"needs-action":"done-action")+'">'+
     '<div class="action-icon">'+esc(info.icon)+'</div>'+
-    '<div class="action-main"><div class="row"><div><div class="action-type">'+esc(info.label)+'</div><h3>'+esc(a.title)+'</h3></div><span class="status '+esc(a.status)+'">'+esc(nice(a.status))+'</span></div>'+
+    '<div class="action-main"><div class="row"><div><div class="action-type">'+esc(info.label)+' · '+esc(nice(a.action_category||"general"))+'</div><h3>'+esc(a.title)+'</h3></div><div class="action-score"><strong>'+esc(a.priority_score||50)+'</strong><span>PRIORITY</span></div></div>'+
     '<p class="action-desc">'+esc(a.rationale||info.desc)+'</p>'+
+    (outcome?'<div class="action-outcome"><span>BUSINESS OUTCOME</span><b>'+esc(outcome)+'</b>'+(audience?'<small>Target: '+esc(audience)+'</small>':'')+'</div>':'')+
+    context+tactics+
     (body?'<div class="deliverable-preview"><div class="deliverable-label">PREPARED FOR YOU</div><div class="deliverable-body">'+esc(body)+'</div></div>':'')+
     (note?'<p class="note">'+esc(note)+'</p>':'')+
     (pending?'<div class="actions"><button class="btn gold small" onclick="approveAction('+a.id+')">'+esc(approvalLabel(a.action_type))+'</button></div>':'')+
@@ -200,11 +215,11 @@ function intelligence(){
 window.setIntelProgram=function(id){state.intelProgram=String(id);render()};
 
 function actions(){
-  const pending=state.data.actions.filter(a=>a.status==="proposed");
+  const pending=state.data.actions.filter(a=>a.status==="proposed").sort((a,b)=>Number(b.priority_score||0)-Number(a.priority_score||0));
   const finished=state.data.actions.filter(a=>a.status!=="proposed");
-  return '<div class="page-intro action-intro"><div class="page-icon">✓</div><div><h2>Action Center</h2><p>This is where intelligence becomes something useful. Review proposals, question sets, outreach, website content and other work prepared for you.</p></div></div>'+
-  '<div class="action-layout"><section><div class="action-section-head"><div><span>NEEDS YOUR APPROVAL</span><h2>Ready for your decision</h2></div><div class="count-badge">'+pending.length+'</div></div>'+
-  (pending.map(actionCard).join("")||'<div class="empty">Nothing is waiting on you.</div>')+'</section>'+
+  return '<div class="page-intro action-intro"><div class="page-icon">✓</div><div><h2>Action Center</h2><p>This is the short list of business actions that rise above the intelligence. Content ideas and tactical suggestions are folded underneath the primary action instead of becoming separate cards.</p></div></div>'+
+  '<div class="action-layout"><section><div class="action-section-head"><div><span>PRIORITY ACTIONS</span><h2>What should we actually do?</h2></div><div class="count-badge">'+pending.length+'</div></div>'+
+  (pending.map(actionCard).join("")||'<div class="empty">Nothing currently requires action.</div>')+'</section>'+
   '<section><div class="action-section-head completed"><div><span>HISTORY</span><h2>Approved & completed</h2></div></div>'+
   (finished.map(actionCard).join("")||'<div class="empty">No completed actions yet.</div>')+'</section></div>';
 }
