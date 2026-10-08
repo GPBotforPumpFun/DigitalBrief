@@ -187,13 +187,26 @@ function opportunitiesView(){
   (items.map(opportunityCard).join("")||'<div class="empty">No opportunities match this view.</div>')+'</div>';
 }
 function actionsView(){
-  const groups=["proposed","approved","executed","dismissed"];
-  return '<div class="panel"><div class="panel-head"><div><h2>Action queue</h2><div class="muted">The system recommends. Lucid Logic or the client approves. Connected systems execute.</div></div></div>'+
-  groups.map(function(g){
-    const html=scoped(state.data.actions).filter(function(a){return a.status===g}).map(actionCard).join("");
-    return '<h3 style="margin-top:22px">'+nice(g)+'</h3>'+(html||'<div class="empty">None</div>');
-  }).join("")+'</div>';
+  const all=scoped(state.data.actions);
+  const priority=all.filter(function(a){return a.action_scope==="priority"&&!a.superseded});
+  const raw=all.filter(function(a){return a.action_scope!=="priority"});
+  const proposed=priority.filter(function(a){return a.status==="proposed"}).sort(function(a,b){return Number(b.priority_score||0)-Number(a.priority_score||0)});
+  const history=priority.filter(function(a){return a.status!=="proposed"});
+  const client=currentClient();
+  return '<div class="panel"><div class="panel-head"><div><h2>Action Center</h2><div class="muted">Client-facing actions are synthesized across intelligence programs. Raw monitor suggestions stay internal unless they rise into the priority list.</div></div>'+
+  (client?'<button class="btn gold small" onclick="rebuildPriorityActions('+client.id+')">Rebuild priority actions</button>':'')+'</div>'+
+  '<div class="admin-action-summary"><div><b>'+proposed.length+'</b><span>Priority actions</span></div><div><b>'+raw.filter(function(a){return a.status==="proposed"}).length+'</b><span>Raw suggestions hidden from client</span></div></div>'+
+  '<h3 style="margin-top:22px">Priority actions</h3>'+(proposed.map(actionCard).join("")||'<div class="empty">No priority actions yet.</div>')+
+  (history.length?'<h3 style="margin-top:22px">Priority action history</h3>'+history.map(actionCard).join(""):'')+
+  '<details class="raw-actions"><summary>Internal raw suggestions ('+raw.length+')</summary><div class="muted raw-help">These are monitor-level ideas and are not shown in the client portal. They feed the action-synthesis layer.</div>'+raw.map(actionCard).join("")+'</details></div>';
 }
+window.rebuildPriorityActions=async function(clientId){
+  try{
+    await api("/api/clients/"+clientId+"/rebuild-actions",{method:"POST",body:"{}"});
+    toast("Priority action rebuild queued. Refresh in about a minute.");
+  }catch(e){toast(e.message)}
+};
+
 function latestRunForProgram(programId){
   const runs=(state.data&&state.data.runs)||[];
   return runs.find(function(r){return String(r.program_id)===String(programId)})||null;
