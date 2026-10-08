@@ -55,7 +55,14 @@ const schema = [
 "alter table intel_actions add column if not exists target_audience text",
 "alter table intel_actions add column if not exists source_signal_ids jsonb not null default '[]'::jsonb",
 "alter table intel_actions add column if not exists superseded boolean not null default false",
-"create index if not exists ix_actions_client_scope_status on intel_actions(client_id,action_scope,status,superseded)"
+"create index if not exists ix_actions_client_scope_status on intel_actions(client_id,action_scope,status,superseded)",
+"alter table intel_actions add column if not exists assigned_to text",
+"alter table intel_actions add column if not exists requested_at timestamptz",
+"alter table intel_actions add column if not exists completed_at timestamptz",
+"alter table intel_opportunities add column if not exists pursuit_owner text",
+"alter table intel_opportunities add column if not exists pursued_at timestamptz",
+"create table if not exists intel_opportunity_artifacts(id serial primary key,opportunity_id int not null references intel_opportunities(id) on delete cascade,client_id int not null references intel_clients(id) on delete cascade,artifact_type text not null,title text,body text,notes text,status text not null default 'generating',error text,created_at timestamptz not null default now(),updated_at timestamptz not null default now())",
+"create index if not exists ix_opp_artifacts_opp_type on intel_opportunity_artifacts(opportunity_id,artifact_type,created_at desc)"
 ];
 
 function encrypt(obj){
@@ -538,6 +545,8 @@ async function init(){
 
   await pool.query("insert into intel_opportunities(signal_id,client_id,program_id,title,summary,source_name,source_url,document_url,opportunity_type,fit_score,recommendation) select s.id,s.client_id,s.program_id,s.title,s.what_changed,s.source_name,s.source_url,s.source_url,'rfp',least(100,greatest(0,s.confidence)),s.why_it_matters from intel_signals s join intel_programs p on p.id=s.program_id where p.program_type='opportunity' and not exists(select 1 from intel_opportunities o where o.signal_id=s.id)");
   await repairOpportunityDates();
+  await pool.query("update intel_actions set status='requested',assigned_to=coalesce(assigned_to,'Lucid Logic'),requested_at=coalesce(requested_at,executed_at,created_at),executed_at=null where status in ('approved','executed') and action_type not in ('website_post','social_post')");
+  await pool.query("update intel_actions set superseded=true where rationale='Created from client opportunity decision workflow' and action_type in ('questions','proposal')");
   await pool.query("delete from intel_client_sessions where expires_at<=now()");
   setImmediate(function(){bootstrapPriorityActions().catch(function(e){app.log.error({err:e},"priority action bootstrap failed")})});
 }
@@ -685,32 +694,32 @@ async function executeAction(action){
   const payload=action.payload||{};
   if(action.action_type==="website_post"){
     const c=con.rows.find(function(x){return x.connector_type==="wordpress"||x.connector_type==="webhook"});
-    if(!c) return {executed:false,message:"No website connector configured"};
+    if(!c) return {executed:false,requested:true,assignedTo:"Lucid Logic",message:"Requested from Lucid Logic. No website change has been made yet."};
     const cfg=decrypt(c.encrypted_config);
     if(c.connector_type==="wordpress"){
       const endpoint=(cfg.url||client.website_url||"").replace(/\/$/,"")+"/wp-json/wp/v2/posts";
       const auth=Buffer.from(cfg.username+":"+cfg.appPassword).toString("base64");
       const r=await fetch(endpoint,{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Basic "+auth},body:JSON.stringify({title:payload.title||action.title,content:payload.body||payload.content||"",status:payload.status||"draft"})});
       if(!r.ok) throw new Error("WordPress returned "+r.status);
-      return {executed:true,message:"Sent to WordPress as "+(payload.status||"draft")};
+      return {executed:true,requested:false,assignedTo:"Connected website",message:"Sent to WordPress as "+(payload.status||"draft")};
     }
     const headers={"Content-Type":"application/json"};
     if(cfg.token) headers.Authorization="Bearer "+cfg.token;
     const r=await fetch(cfg.url,{method:"POST",headers:headers,body:JSON.stringify({event:"website_post",client:client.name,action:payload})});
     if(!r.ok) throw new Error("Webhook returned "+r.status);
-    return {executed:true,message:"Website webhook called"};
+    return {executed:true,requested:false,assignedTo:"Connected website",message:"Website webhook called"};
   }
   if(action.action_type==="social_post"){
     const c=con.rows.find(function(x){return x.connector_type==="social_webhook"});
-    if(!c) return {executed:false,message:"No social publishing connector configured"};
+    if(!c) return {executed:false,requested:true,assignedTo:"Lucid Logic",message:"Requested from Lucid Logic. Nothing has been published yet."};
     const cfg=decrypt(c.encrypted_config);
     const headers={"Content-Type":"application/json"};
     if(cfg.token) headers.Authorization="Bearer "+cfg.token;
     const r=await fetch(cfg.url,{method:"POST",headers:headers,body:JSON.stringify({event:"social_post",client:client.name,action:payload})});
     if(!r.ok) throw new Error("Social webhook returned "+r.status);
-    return {executed:true,message:"Social publishing webhook called"};
+    return {executed:true,requested:false,assignedTo:"Connected social publisher",message:"Social publishing webhook called"};
   }
-  return {executed:true,message:"Approved and packaged for delivery",result:payload};
+  return {executed:false,requested:true,assignedTo:"Lucid Logic",message:"Requested from Lucid Logic. The action is now in the managed work queue. No work has been marked complete yet."};
 }
 
 app.post("/api/admin/login",async function(req,reply){
@@ -772,36 +781,64 @@ app.get("/api/portal/dashboard",async function(req,reply){
   const all=await Promise.all([
     pool.query("select s.*,p.name program_name,p.program_type from intel_signals s join intel_programs p on p.id=s.program_id where s.client_id=$1 and s.client_visible=true and p.client_visible=true order by s.created_at desc limit 100",[id]),
     pool.query("select o.* from intel_opportunities o join intel_programs p on p.id=o.program_id where o.client_id=$1 and p.active=true and p.client_visible=true order by case o.pursuit_status when 'pursue' then 0 when 'review' then 1 else 2 end,coalesce(o.deadline,'2999-12-31') asc,o.created_at desc",[id]),
-    pool.query("select a.*,s.title signal_title,s.what_changed signal_what_changed,s.why_it_matters signal_why_it_matters from intel_actions a left join intel_signals s on s.id=a.signal_id left join intel_programs p on p.id=a.program_id where a.client_id=$1 and a.action_scope='priority' and a.superseded=false and (p.id is null or p.client_visible=true) order by case when a.status='proposed' then 0 else 1 end,a.priority_score desc,a.created_at desc limit 50",[id]),
-    pool.query("select id,name,program_type,cadence,objective,last_run_at from intel_programs where client_id=$1 and active=true and client_visible=true order by name",[id])
+    pool.query("select a.*,s.title signal_title,s.what_changed signal_what_changed,s.why_it_matters signal_why_it_matters from intel_actions a left join intel_signals s on s.id=a.signal_id left join intel_programs p on p.id=a.program_id where a.client_id=$1 and a.action_scope='priority' and a.superseded=false and (p.id is null or p.client_visible=true) order by case when a.status='proposed' then 0 when a.status in ('requested','in_progress') then 1 else 2 end,a.priority_score desc,a.created_at desc limit 50",[id]),
+    pool.query("select id,name,program_type,cadence,objective,last_run_at from intel_programs where client_id=$1 and active=true and client_visible=true order by name",[id]),
+    pool.query("select id,client_id,connector_type,name,status from intel_connectors where client_id=$1 order by id",[id]),
+    pool.query("select * from intel_opportunity_artifacts where client_id=$1 order by created_at desc limit 100",[id])
   ]);
-  return {signals:all[0].rows,opportunities:all[1].rows,actions:all[2].rows,programs:all[3].rows};
+  return {signals:all[0].rows,opportunities:all[1].rows,actions:all[2].rows,programs:all[3].rows,connectors:all[4].rows,opportunityArtifacts:all[5].rows};
 });
 app.post("/api/portal/opportunities/:id/status",async function(req,reply){
   const u=await requirePortalUser(req,reply);
   if(!u) return;
   const status=String((req.body||{}).status||"");
   if(!["review","pursue","pass"].includes(status)) return reply.code(400).send({error:"Invalid status"});
-  const r=await pool.query("update intel_opportunities set pursuit_status=$1,updated_at=now() where id=$2 and client_id=$3 returning *",[status,Number(req.params.id),u.client_id]);
+  const r=await pool.query("update intel_opportunities set pursuit_status=$1,pursuit_owner=case when $1='pursue' then 'Client + Lucid Logic' else pursuit_owner end,pursued_at=case when $1='pursue' then coalesce(pursued_at,now()) else pursued_at end,updated_at=now() where id=$2 and client_id=$3 returning *",[status,Number(req.params.id),u.client_id]);
   if(!r.rows[0]) return reply.code(404).send({error:"Opportunity not found"});
-  return r.rows[0];
+  return {opportunity:r.rows[0],message:status==="pursue"?"Marked as an active pursuit. Nothing has been submitted. Use the workspace to generate questions or a proposal draft.":status==="pass"?"Moved to Passed. No further pursuit work will be generated unless you change the status.":"Moved back to Review."};
 });
 app.post("/api/portal/opportunities/:id/generate",async function(req,reply){
   const u=await requirePortalUser(req,reply);
   if(!u) return;
   const type=String((req.body||{}).action_type||"questions");
-  if(!["questions","proposal","outreach","email_draft"].includes(type)) return reply.code(400).send({error:"Unsupported action"});
+  if(!["questions","proposal"].includes(type)) return reply.code(400).send({error:"Unsupported work product"});
   const q=await pool.query("select o.*,s.what_changed,s.why_it_matters from intel_opportunities o left join intel_signals s on s.id=o.signal_id where o.id=$1 and o.client_id=$2",[Number(req.params.id),u.client_id]);
   const o=q.rows[0];
   if(!o) return reply.code(404).send({error:"Opportunity not found"});
-  let payload={title:o.title,body:(o.summary||o.what_changed||"")+"\n\nRecommendation: "+(o.recommendation||o.why_it_matters||""),notes:"Generated from the opportunity workspace."};
-  if(await hasAIKey()){
-    const prompt="Create a client-ready "+type+" for this opportunity. Company: "+u.client_name+". Opportunity: "+o.title+". Summary: "+(o.summary||o.what_changed||"")+". Recommendation: "+(o.recommendation||o.why_it_matters||"")+". Deadline: "+(o.deadline||"unknown")+". Q&A deadline: "+(o.qa_deadline||"unknown")+". Requirements: "+JSON.stringify(o.requirements||[])+". Source: "+(o.document_url||o.source_url||"")+". Return only JSON with title, body and notes.";
-    const out=parseJson(await openai(prompt,false));
-    if(out) payload=out;
-  }
-  const r=await pool.query("insert into intel_actions(signal_id,client_id,program_id,action_type,title,rationale,payload,action_scope,priority_score,action_category,business_outcome,target_audience,source_signal_ids) values($1,$2,$3,$4,$5,$6,$7,'priority',90,'revenue',$8,$9,$10) returning *",[o.signal_id,u.client_id,o.program_id,type,payload.title||("Create "+type),"Created from client opportunity decision workflow",JSON.stringify(payload),"Advance a qualified opportunity toward submission","Decision makers for this opportunity",JSON.stringify(o.signal_id?[o.signal_id]:[]) ]);
-  return r.rows[0];
+  const ar=await pool.query("insert into intel_opportunity_artifacts(opportunity_id,client_id,artifact_type,title,status) values($1,$2,$3,$4,'generating') returning *",[o.id,u.client_id,type,type==="proposal"?"Proposal draft":"Questions to clarify"]);
+  const artifact=ar.rows[0];
+
+  setImmediate(async function(){
+    try{
+      let payload={
+        title:type==="proposal"?"Proposal draft for "+o.title:"Questions for "+o.title,
+        body:(o.summary||o.what_changed||"")+"
+
+Recommendation: "+(o.recommendation||o.why_it_matters||""),
+        notes:"Generated from the opportunity workspace. Nothing has been submitted externally."
+      };
+      if(await hasAIKey()){
+        const task=type==="proposal"
+          ?"Create a strong first-pass proposal draft. Include executive summary, understanding of need, recommended approach, deliverables, implementation plan, assumptions, relevant capability positioning, risks/gaps to verify, and a clear section called 'Still needed from client' for facts that cannot be invented. Do not fabricate pricing, references, certifications or experience."
+          :"Create a concise set of questions that should be answered before pursuing or submitting. Separate them into: eligibility/compliance questions, scope/technical questions, commercial questions, timeline/process questions, and internal go/no-go questions. Flag which questions should be sent to the issuer versus answered internally.";
+        const prompt=task+" Company: "+u.client_name+". Opportunity: "+o.title+". Summary: "+(o.summary||o.what_changed||"")+". Recommendation: "+(o.recommendation||o.why_it_matters||"")+". Deadline: "+(o.deadline||"unknown")+". Q&A deadline: "+(o.qa_deadline||"unknown")+". Requirements: "+JSON.stringify(o.requirements||[])+". Source URL: "+(o.document_url||o.source_url||"")+". Use the source URL when accessible. Return ONLY JSON with title, body and notes.";
+        const out=parseJson(await openai(prompt,true));
+        if(out) payload=out;
+      }
+      await pool.query("update intel_opportunity_artifacts set title=$1,body=$2,notes=$3,status='ready',updated_at=now() where id=$4",[payload.title||artifact.title,payload.body||"",payload.notes||"",artifact.id]);
+    }catch(e){
+      await pool.query("update intel_opportunity_artifacts set status='failed',error=$1,updated_at=now() where id=$2",[String(e.message||e),artifact.id]);
+      app.log.error({err:e,artifactId:artifact.id,opportunityId:o.id},"opportunity artifact generation failed");
+    }
+  });
+  return reply.code(202).send({artifactId:artifact.id,status:"generating",message:type==="proposal"?"Generating proposal draft. Nothing will be submitted.":"Generating questions. Nothing will be sent externally."});
+});
+app.get("/api/portal/opportunity-artifacts/:id",async function(req,reply){
+  const u=await requirePortalUser(req,reply);
+  if(!u) return;
+  const q=await pool.query("select * from intel_opportunity_artifacts where id=$1 and client_id=$2",[Number(req.params.id),u.client_id]);
+  if(!q.rows[0]) return reply.code(404).send({error:"Work product not found"});
+  return q.rows[0];
 });
 app.post("/api/portal/actions/:id/approve",async function(req,reply){
   const u=await requirePortalUser(req,reply);
@@ -810,8 +847,9 @@ app.post("/api/portal/actions/:id/approve",async function(req,reply){
   if(!q.rows[0]) return reply.code(404).send({error:"Action not found"});
   try{
     const result=await executeAction(q.rows[0]);
-    await pool.query("update intel_actions set status=$1,executed_at=case when $2 then now() else executed_at end where id=$3",[result.executed?"executed":"approved",result.executed,q.rows[0].id]);
-    return result;
+    const status=result.executed?"executed":"requested";
+    await pool.query("update intel_actions set status=$1,assigned_to=$2,requested_at=case when $1='requested' then coalesce(requested_at,now()) else requested_at end,executed_at=case when $3 then now() else executed_at end where id=$4",[status,result.assignedTo||null,result.executed,q.rows[0].id]);
+    return Object.assign({status:status},result);
   }catch(e){return reply.code(500).send({error:e.message})}
 });
 
@@ -1016,13 +1054,22 @@ app.post("/api/actions/generate",async function(req,reply){
   const r=await pool.query("insert into intel_actions(signal_id,client_id,program_id,action_type,title,rationale,payload,action_scope,priority_score,action_category,business_outcome,target_audience,source_signal_ids) values($1,$2,$3,$4,$5,$6,$7,'priority',75,'operational',$8,$9,$10) returning *",[s.id,s.client_id,s.program_id,type,payload.title||("Create "+type),"Generated directly from a material intelligence signal",JSON.stringify(payload),"Execute the selected response to this intelligence","Client-selected audience",JSON.stringify([s.id])]);
   return r.rows[0];
 });
+app.patch("/api/actions/:id/status",async function(req,reply){
+  const id=Number(req.params.id),status=String((req.body||{}).status||"");
+  if(!["requested","in_progress","completed","dismissed","proposed"].includes(status)) return reply.code(400).send({error:"Invalid action status"});
+  const assigned=status==="requested"||status==="in_progress"?"Lucid Logic":null;
+  const r=await pool.query("update intel_actions set status=$1,assigned_to=coalesce($2,assigned_to),requested_at=case when $1='requested' then coalesce(requested_at,now()) else requested_at end,completed_at=case when $1='completed' then now() else completed_at end where id=$3 returning *",[status,assigned,id]);
+  if(!r.rows[0]) return reply.code(404).send({error:"Action not found"});
+  return r.rows[0];
+});
 app.post("/api/actions/:id/approve",async function(req,reply){
   const q=await pool.query("select * from intel_actions where id=$1",[Number(req.params.id)]);
   if(!q.rows[0]) return reply.code(404).send({error:"Not found"});
   try{
     const result=await executeAction(q.rows[0]);
-    await pool.query("update intel_actions set status=$1,executed_at=case when $2 then now() else executed_at end where id=$3",[result.executed?"executed":"approved",result.executed,q.rows[0].id]);
-    return result;
+    const status=result.executed?"executed":"requested";
+    await pool.query("update intel_actions set status=$1,assigned_to=$2,requested_at=case when $1='requested' then coalesce(requested_at,now()) else requested_at end,executed_at=case when $3 then now() else executed_at end where id=$4",[status,result.assignedTo||null,result.executed,q.rows[0].id]);
+    return Object.assign({status:status},result);
   }catch(e){return reply.code(500).send({error:e.message})}
 });
 app.post("/api/actions/:id/dismiss",async function(req){
