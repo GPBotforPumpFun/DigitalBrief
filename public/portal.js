@@ -76,15 +76,59 @@ function actionStatusMessage(a){
   if(a.status==="completed") return '<div class="managed-status complete"><b>Completed</b><span>This action has been marked complete.</span></div>';
   return "";
 }
+function tacticArtifactType(text){
+  const t=String(text||"").toLowerCase();
+  if(/prospect|account list|build.*list|prioritized.*list|target list|entities|organizations/.test(t)) return "prospect_list";
+  if(/outreach|email|message|contact|approach|referral/.test(t)) return "outreach_draft";
+  if(/website|page|article|content|landing page|service page/.test(t)) return "content_draft";
+  if(/social|linkedin|post/.test(t)) return "social_draft";
+  if(/audit|assessment|inventory|checklist|risk assessment|remediation plan|roadmap|plan/.test(t)) return "checklist";
+  return "assist";
+}
+function tacticButtonLabel(type){
+  return {prospect_list:"Build List",outreach_draft:"Draft Outreach",content_draft:"Draft Content",social_draft:"Draft Social Post",checklist:"Build Checklist",assist:"Help Me Do This"}[type]||"Help Me Do This";
+}
+function actionArtifactsFor(actionId){
+  return (state.data.actionArtifacts||[]).filter(x=>String(x.action_id)===String(actionId));
+}
+function linkifyArtifact(text){
+  const escaped=esc(text||"");
+  return escaped.replace(/(https?:\/\/[^\s<]+)/g,'<a target="_blank" rel="noopener" href="$1">$1</a>').replace(/\n/g,"<br>");
+}
+function actionArtifactCard(a){
+  if(a.status==="generating") return '<div class="action-artifact generating"><div><b>'+esc(a.title||"Building work product")+'</b><span>Working on this now. You can leave this page and come back.</span></div><div class="artifact-spinner">…</div></div>';
+  if(a.status==="failed") return '<div class="action-artifact failed"><b>Could not build this</b><span>'+esc(a.error||"Please try again.")+'</span></div>';
+  return '<details class="action-artifact ready" open><summary>'+esc(a.title||nice(a.artifact_type))+' <span>Ready</span></summary><div class="action-artifact-body">'+linkifyArtifact(a.body||"")+'</div>'+(a.notes?'<div class="artifact-notes">'+esc(a.notes)+'</div>':'')+'<button class="btn small" onclick="copyActionArtifact('+a.id+')">Copy</button></details>';
+}
+function supportingTacticsHtml(a,tactics){
+  if(!Array.isArray(tactics)||!tactics.length) return "";
+  const artifacts=actionArtifactsFor(a.id);
+  const rows=tactics.slice(0,5).map(function(t,index){
+    const text=typeof t==="string"?t:JSON.stringify(t);
+    const type=tacticArtifactType(text);
+    const existing=artifacts.find(x=>x.tactic_key&&x.status&&x.title&&String(x.title)===text);
+    const anyForIndex=artifacts.find(x=>String(x.title)===text);
+    const artifact=existing||anyForIndex;
+    const button=artifact
+      ?'<button class="btn small" disabled>'+(artifact.status==="generating"?"Building…":"Built")+'</button>'
+      :'<button class="btn small tactic-btn" onclick="buildTactic('+a.id+','+index+',\''+encodeURIComponent(text)+'\',\''+type+'\')">'+esc(tacticButtonLabel(type))+'</button>';
+    return '<div class="tactic-row"><div class="tactic-copy">'+esc(text)+'</div>'+button+'</div>';
+  }).join("");
+  const artifactHtml=artifacts.length?'<div class="action-work-products"><div class="work-products-label">WORK PRODUCED FROM THIS ACTION</div>'+artifacts.map(actionArtifactCard).join("")+'</div>':"";
+  return '<div class="supporting-tactics"><span>SUPPORTING TACTICS</span>'+rows+artifactHtml+'</div>';
+}
+window.copyActionArtifact=function(id){
+  const a=(state.data.actionArtifacts||[]).find(x=>String(x.id)===String(id));
+  if(!a)return;
+  navigator.clipboard.writeText(a.body||"").then(()=>toast("Copied")).catch(()=>toast("Could not copy"));
+};
 function actionCard(a){
   const p=a.payload||{};
   const info=actionInfo(a.action_type);
   const body=p.body||p.content||"";
   const note=p.notes||"";
   const pending=a.status==="proposed";
-  const tactics=Array.isArray(p.supporting_tactics)&&p.supporting_tactics.length
-    ?'<div class="supporting-tactics"><span>SUPPORTING TACTICS</span><ul>'+p.supporting_tactics.slice(0,5).map(t=>'<li>'+esc(typeof t==="string"?t:JSON.stringify(t))+'</li>').join("")+'</ul></div>'
-    :"";
+  const tactics=supportingTacticsHtml(a,p.supporting_tactics);
   const context=a.signal_title?'<div class="action-context"><span>SOURCE INTELLIGENCE</span><b>'+esc(a.signal_title)+'</b>'+(a.signal_what_changed?'<p>'+esc(a.signal_what_changed)+'</p>':'')+'</div>':"";
   const outcome=a.business_outcome||p.business_outcome||"";
   const audience=a.target_audience||p.target_audience||"";
@@ -403,6 +447,37 @@ window.generateOpp=async(id,type)=>{
     state.view="opportunities";
     render();
     waitForArtifact(r.artifactId,id);
+  }catch(e){toast(e.message)}
+};
+async function waitForActionArtifact(artifactId,actionId){
+  const started=Date.now();
+  while(Date.now()-started<240000){
+    await new Promise(r=>setTimeout(r,3000));
+    try{
+      const a=await api("/api/portal/action-artifacts/"+artifactId);
+      state.data=await api("/api/portal/dashboard");
+      state.view="actions";
+      render();
+      if(a.status==="ready"){
+        toast("Built and attached to this next step");
+        setTimeout(()=>document.getElementById("action-"+actionId)?.scrollIntoView({behavior:"smooth",block:"center"}),60);
+        return;
+      }
+      if(a.status==="failed"){toast(a.error||"Could not build this");return}
+    }catch(e){toast(e.message);return}
+  }
+  toast("Still working. You can leave this page and come back later.");
+}
+window.buildTactic=async function(actionId,index,encoded,type){
+  const tactic=decodeURIComponent(encoded);
+  try{
+    const r=await api("/api/portal/actions/"+actionId+"/work-products",{method:"POST",body:JSON.stringify({tactic:tactic,tactic_index:index,artifact_type:type})});
+    toast(r.message||"Building this now");
+    state.data=await api("/api/portal/dashboard");
+    state.view="actions";
+    render();
+    if(r.status==="ready") return;
+    waitForActionArtifact(r.artifactId,actionId);
   }catch(e){toast(e.message)}
 };
 window.approveAction=async id=>{
