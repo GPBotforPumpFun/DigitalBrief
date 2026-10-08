@@ -69,19 +69,23 @@ function actionCard(a){
   const p=a.payload||{};
   let body=p.body?'<div class="code">'+esc(p.body)+'</div>':"";
   let buttons="";
-  if(a.status==="proposed"){
-    buttons='<div class="actions"><button class="btn gold small" onclick="approveAction('+a.id+')">Execute or Queue</button>'+
-    '<button class="btn small danger" onclick="dismissAction('+a.id+')">Dismiss</button></div>';
+  if(a.status==="proposed"&&a.owner_type==="lucid_logic"){
+    buttons='<div class="actions"><button class="btn gold small" onclick="approveAction('+a.id+')">Queue / Execute</button><button class="btn small danger" onclick="dismissAction('+a.id+')">Dismiss</button></div>';
+  }else if(a.status==="proposed"){
+    buttons='<div class="actions"><span class="pill">Client-owned next step</span><button class="btn small danger" onclick="dismissAction('+a.id+')">Dismiss</button></div>';
   }else if(a.status==="requested"){
     buttons='<div class="actions"><button class="btn gold small" onclick="setActionWorkflow('+a.id+',&quot;in_progress&quot;)">Start work</button><button class="btn small" onclick="setActionWorkflow('+a.id+',&quot;completed&quot;)">Mark complete</button></div>';
-  }else if(a.status==="in_progress"){
+  }else if(a.status==="in_progress"&&a.owner_type==="lucid_logic"){
     buttons='<div class="actions"><button class="btn gold small" onclick="setActionWorkflow('+a.id+',&quot;completed&quot;)">Mark complete</button></div>';
   }
-  const owner=a.assigned_to?'<div class="admin-owner"><b>Owner:</b> '+esc(a.assigned_to)+'</div>':"";
+  const owner=a.owner_type==="lucid_logic"?"Lucid Logic":"Client";
+  const assigned=a.assigned_to||owner;
   return '<article class="action"><div class="row"><div><div class="signal-title">'+esc(a.title)+'</div>'+
   '<div class="meta"><span>'+esc(a.client_name||"")+'</span><span>•</span><span class="pill action">'+esc(nice(a.action_type))+'</span><span>•</span><span>'+ago(a.created_at)+'</span></div></div>'+
   '<span class="pill">'+esc(nice(a.status))+'</span></div>'+
-  (a.rationale?'<p class="muted">'+esc(a.rationale)+'</p>':"")+owner+body+buttons+'</article>';
+  (a.rationale?'<p class="muted">'+esc(a.rationale)+'</p>':"")+
+  '<div class="admin-owner"><b>Owner:</b> '+esc(assigned)+'</div>'+
+  (a.client_step?'<div class="admin-owner"><b>Next step:</b> '+esc(a.client_step)+'</div>':'')+body+buttons+'</article>';
 }
 
 function opportunityDate(value){
@@ -195,19 +199,20 @@ function actionsView(){
   const all=scoped(state.data.actions);
   const priority=all.filter(function(a){return a.action_scope==="priority"&&!a.superseded});
   const raw=all.filter(function(a){return a.action_scope!=="priority"});
-  const decisions=priority.filter(function(a){return a.status==="proposed"}).sort(function(a,b){return Number(b.priority_score||0)-Number(a.priority_score||0)});
-  const requested=priority.filter(function(a){return a.status==="requested"});
-  const progress=priority.filter(function(a){return a.status==="in_progress"});
+  const clientDecision=priority.filter(function(a){return a.status==="proposed"&&a.owner_type!=="lucid_logic"}).sort(function(a,b){return Number(b.priority_score||0)-Number(a.priority_score||0)});
+  const clientWork=priority.filter(function(a){return a.status==="in_progress"&&a.owner_type!=="lucid_logic"});
+  const llDecision=priority.filter(function(a){return a.status==="proposed"&&a.owner_type==="lucid_logic"}).sort(function(a,b){return Number(b.priority_score||0)-Number(a.priority_score||0)});
+  const llQueue=priority.filter(function(a){return (a.status==="requested"||a.status==="in_progress")&&a.owner_type==="lucid_logic"});
   const completed=priority.filter(function(a){return a.status==="completed"||a.status==="executed"});
   const client=currentClient();
-  return '<div class="panel"><div class="panel-head"><div><h2>Action Center</h2><div class="muted">This is the managed work queue. Client decisions do not count as completed work. Requested items stay here until Lucid Logic or a connected system actually finishes them.</div></div>'+
+  return '<div class="panel"><div class="panel-head"><div><h2>Action Center</h2><div class="muted">Ownership is explicit. Client actions are theirs to perform. Only Lucid Logic-owned items enter our managed work queue.</div></div>'+
   (client?'<button class="btn gold small" onclick="rebuildPriorityActions('+client.id+')">Rebuild priority actions</button>':'')+'</div>'+
-  '<div class="admin-action-summary"><div><b>'+decisions.length+'</b><span>Awaiting client decision</span></div><div><b>'+(requested.length+progress.length)+'</b><span>Managed work open</span></div></div>'+
-  '<h3 style="margin-top:22px">Awaiting decision</h3>'+(decisions.map(actionCard).join("")||'<div class="empty">None</div>')+
-  '<h3 style="margin-top:22px">Requested from Lucid Logic</h3>'+(requested.map(actionCard).join("")||'<div class="empty">None</div>')+
-  '<h3 style="margin-top:22px">In progress</h3>'+(progress.map(actionCard).join("")||'<div class="empty">None</div>')+
+  '<div class="admin-action-summary"><div><b>'+clientDecision.length+'</b><span>Client decisions</span></div><div><b>'+llQueue.length+'</b><span>Lucid Logic work open</span></div></div>'+
+  '<h3 style="margin-top:22px">Client-owned next steps</h3>'+(clientDecision.concat(clientWork).map(actionCard).join("")||'<div class="empty">None</div>')+
+  '<h3 style="margin-top:22px">Lucid Logic can handle</h3>'+(llDecision.map(actionCard).join("")||'<div class="empty">None</div>')+
+  '<h3 style="margin-top:22px">Lucid Logic managed work</h3>'+(llQueue.map(actionCard).join("")||'<div class="empty">None</div>')+
   (completed.length?'<h3 style="margin-top:22px">Actually completed</h3>'+completed.map(actionCard).join(""):'')+
-  '<details class="raw-actions"><summary>Internal raw suggestions ('+raw.length+')</summary><div class="muted raw-help">These are monitor-level ideas and are not shown in the client portal. They feed the action-synthesis layer.</div>'+raw.map(actionCard).join("")+'</details></div>';
+  '<details class="raw-actions"><summary>Internal raw suggestions ('+raw.length+')</summary><div class="muted raw-help">Monitor-level ideas only. They are not shown to the client unless synthesized into a priority action.</div>'+raw.map(actionCard).join("")+'</details></div>';
 }
 window.rebuildPriorityActions=async function(clientId){
   try{
