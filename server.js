@@ -800,7 +800,7 @@ app.post("/api/portal/opportunities/:id/generate",async function(req,reply){
     const out=parseJson(await openai(prompt,false));
     if(out) payload=out;
   }
-  const r=await pool.query("insert into intel_actions(signal_id,client_id,program_id,action_type,title,rationale,payload) values($1,$2,$3,$4,$5,$6,$7) returning *",[o.signal_id,u.client_id,o.program_id,type,payload.title||("Create "+type),"Created from client opportunity decision workflow",JSON.stringify(payload)]);
+  const r=await pool.query("insert into intel_actions(signal_id,client_id,program_id,action_type,title,rationale,payload,action_scope,priority_score,action_category,business_outcome,target_audience,source_signal_ids) values($1,$2,$3,$4,$5,$6,$7,'priority',90,'revenue',$8,$9,$10) returning *",[o.signal_id,u.client_id,o.program_id,type,payload.title||("Create "+type),"Created from client opportunity decision workflow",JSON.stringify(payload),"Advance a qualified opportunity toward submission","Decision makers for this opportunity",JSON.stringify(o.signal_id?[o.signal_id]:[]) ]);
   return r.rows[0];
 });
 app.post("/api/portal/actions/:id/approve",async function(req,reply){
@@ -1013,7 +1013,7 @@ app.post("/api/actions/generate",async function(req,reply){
     const out=parseJson(await openai(prompt,false));
     if(out) payload=out;
   }
-  const r=await pool.query("insert into intel_actions(signal_id,client_id,program_id,action_type,title,rationale,payload) values($1,$2,$3,$4,$5,$6,$7) returning *",[s.id,s.client_id,s.program_id,type,payload.title||("Create "+type),"Generated directly from a material intelligence signal",JSON.stringify(payload)]);
+  const r=await pool.query("insert into intel_actions(signal_id,client_id,program_id,action_type,title,rationale,payload,action_scope,priority_score,action_category,business_outcome,target_audience,source_signal_ids) values($1,$2,$3,$4,$5,$6,$7,'priority',75,'operational',$8,$9,$10) returning *",[s.id,s.client_id,s.program_id,type,payload.title||("Create "+type),"Generated directly from a material intelligence signal",JSON.stringify(payload),"Execute the selected response to this intelligence","Client-selected audience",JSON.stringify([s.id])]);
   return r.rows[0];
 });
 app.post("/api/actions/:id/approve",async function(req,reply){
