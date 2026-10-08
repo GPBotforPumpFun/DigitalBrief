@@ -63,6 +63,8 @@ const schema = [
 "alter table intel_actions add column if not exists client_step text",
 "alter table intel_opportunities add column if not exists pursuit_owner text",
 "alter table intel_opportunities add column if not exists pursued_at timestamptz",
+"alter table intel_opportunities add column if not exists duplicate_of int references intel_opportunities(id) on delete set null",
+"create index if not exists ix_opportunities_duplicate_of on intel_opportunities(duplicate_of)",
 "create table if not exists intel_opportunity_artifacts(id serial primary key,opportunity_id int not null references intel_opportunities(id) on delete cascade,client_id int not null references intel_clients(id) on delete cascade,artifact_type text not null,title text,body text,notes text,status text not null default 'generating',error text,created_at timestamptz not null default now(),updated_at timestamptz not null default now())",
 "create index if not exists ix_opp_artifacts_opp_type on intel_opportunity_artifacts(opportunity_id,artifact_type,created_at desc)",
 "create table if not exists intel_action_artifacts(id serial primary key,action_id int not null references intel_actions(id) on delete cascade,client_id int not null references intel_clients(id) on delete cascade,tactic_key text not null,artifact_type text not null,title text,body text,notes text,status text not null default 'generating',error text,created_at timestamptz not null default now(),updated_at timestamptz not null default now(),unique(action_id,tactic_key))",
@@ -299,7 +301,7 @@ async function briefDataForUser(user,options={}){
   const all=await Promise.all([
     pool.query("select s.*,p.name program_name,p.program_type from intel_signals s join intel_programs p on p.id=s.program_id where s.client_id=$1 and s.client_visible=true and p.client_visible=true and p.program_type<>'opportunity' and s.created_at>$2 order by s.importance desc,s.confidence desc,s.created_at desc limit 50",[user.client_id,since]),
     pool.query("select a.*,p.name program_name,p.program_type,s.title source_signal_title,s.what_changed source_what_changed,s.why_it_matters source_why_it_matters,s.source_name source_name,s.source_url source_url,s.importance source_importance,s.confidence source_confidence,s.metadata source_metadata from intel_actions a left join intel_programs p on p.id=a.program_id left join intel_signals s on s.id=a.signal_id where a.client_id=$1 and a.status='proposed' and a.action_scope='priority' and a.superseded=false and (p.id is null or p.client_visible=true) order by a.priority_score desc,a.created_at desc limit 20",[user.client_id]),
-    pool.query("select o.*,p.name program_name from intel_opportunities o join intel_programs p on p.id=o.program_id where o.client_id=$1 and p.client_visible=true and p.active=true and o.pursuit_status='review' order by o.created_at desc limit 30",[user.client_id])
+    pool.query("select o.*,p.name program_name from intel_opportunities o join intel_programs p on p.id=o.program_id where o.client_id=$1 and o.duplicate_of is null and p.client_visible=true and p.active=true and o.pursuit_status='review' order by o.created_at desc limit 30",[user.client_id])
   ]);
 
   const allSignals=all[0].rows;
@@ -488,7 +490,7 @@ async function sendUrgentAlertsForRun(runId,clientId){
       const view=sig.program_type==="opportunity"?"opportunities":"intelligence";
       let itemType=sig.program_type==="opportunity"?"opp":"signal",itemId=sig.id;
       if(sig.program_type==="opportunity"){
-        const oq=await pool.query("select id from intel_opportunities where signal_id=$1",[sig.id]);
+        const oq=await pool.query("select coalesce(duplicate_of,id) id from intel_opportunities where signal_id=$1",[sig.id]);
         if(oq.rows[0]) itemId=oq.rows[0].id;
       }
       const link=deepLink(user,view,itemType,itemId);
@@ -550,6 +552,7 @@ async function init(){
 
   await pool.query("insert into intel_opportunities(signal_id,client_id,program_id,title,summary,source_name,source_url,document_url,opportunity_type,fit_score,recommendation) select s.id,s.client_id,s.program_id,s.title,s.what_changed,s.source_name,s.source_url,s.source_url,'rfp',least(100,greatest(0,s.confidence)),s.why_it_matters from intel_signals s join intel_programs p on p.id=s.program_id where p.program_type='opportunity' and not exists(select 1 from intel_opportunities o where o.signal_id=s.id)");
   await repairOpportunityDates();
+  await reconcileOpportunityDuplicates();
   await pool.query("update intel_actions set status='requested',assigned_to=coalesce(assigned_to,'Lucid Logic'),requested_at=coalesce(requested_at,executed_at,created_at),executed_at=null where status in ('approved','executed') and action_type not in ('website_post','social_post')");
   await pool.query("update intel_actions a set superseded=true where a.action_type in ('questions','proposal') and (a.rationale='Created from client opportunity decision workflow' or exists(select 1 from intel_opportunities o where o.signal_id=a.signal_id))");
   await pool.query("delete from intel_opportunity_artifacts where id in (select id from (select id,row_number() over(partition by opportunity_id,artifact_type order by case when status='ready' then 0 when status='generating' then 1 else 2 end,updated_at desc,id desc) rn from intel_opportunity_artifacts) x where rn>1)");
@@ -638,6 +641,70 @@ function normalizeOpportunityDates(o,item){
     qa_deadline:toISODate(o?.qa_deadline)||inferOpportunityDate(text,"qa")
   };
 }
+
+function oppSolicitationId(o){
+  const text=[o.title,o.summary,o.source_name].filter(Boolean).join(" ");
+  const fye=text.match(/\b(FYE\d{2,4}[-/]\d{2,8})\b/i);
+  if(fye) return fye[1].toUpperCase().replace("/","-");
+  const labeled=text.match(/\b(?:RFP|RFQ|RFI|IFB|ITB|SOLICITATION|BID)(?:\s+(?:NO\.?|NUMBER))?\s*[:#-]?\s*([A-Z0-9]+(?:[-/][A-Z0-9]+)*|\d{3,8})\b/i);
+  if(labeled) return labeled[1].toUpperCase().replaceAll("/","-");
+  return "";
+}
+function oppTitleTokens(v){
+  const stop=new Set(["website","websites","design","hosting","maintenance","modernization","proposal","procurement","partner","requests","request","seeks","seek","opens","open","reopens","rfp","rfq","for","with","and","the","of","to","a","an"]);
+  return new Set(String(v||"").toLowerCase().replace(/[^a-z0-9 ]/g," ").split(/\s+/).filter(x=>x.length>=4&&!stop.has(x)));
+}
+function oppTokenSimilarity(a,b){
+  const A=oppTitleTokens(a),B=oppTitleTokens(b);
+  if(!A.size||!B.size) return 0;
+  let common=0;
+  for(const x of A) if(B.has(x)) common++;
+  return common/Math.min(A.size,B.size);
+}
+function oppSameDate(a,b,key){
+  const av=a[key]?String(a[key]).slice(0,10):"",bv=b[key]?String(b[key]).slice(0,10):"";
+  return av&&bv&&av===bv;
+}
+function opportunitiesAreSame(a,b){
+  if(Number(a.client_id)!==Number(b.client_id)) return false;
+  const aid=oppSolicitationId(a),bid=oppSolicitationId(b);
+  if(aid&&bid&&aid===bid){
+    const geoA=String(a.geography||"").toLowerCase(),geoB=String(b.geography||"").toLowerCase();
+    if(!geoA||!geoB||geoA===geoB||oppTokenSimilarity(a.title,b.title)>=0.35) return true;
+  }
+  if(oppSameDate(a,b,"deadline")&&oppSameDate(a,b,"qa_deadline")&&oppTokenSimilarity(a.title,b.title)>=0.45) return true;
+  if(oppSameDate(a,b,"deadline")&&String(a.geography||"").toLowerCase()===String(b.geography||"").toLowerCase()&&oppTokenSimilarity(a.title,b.title)>=0.58) return true;
+  const au=String(a.document_url||a.source_url||"").replace(/[?#].*$/,"").replace(/\/$/,"");
+  const bu=String(b.document_url||b.source_url||"").replace(/[?#].*$/,"").replace(/\/$/,"");
+  if(au&&bu&&au===bu) return true;
+  return false;
+}
+function oppCanonicalScore(o){
+  const status={won:600,submitted:500,pursue:400,review:300,pass:100,lost:50}[o.pursuit_status]||0;
+  const richness=Math.min(80,String(o.summary||"").length/8)+Math.min(40,Array.isArray(o.requirements)?o.requirements.length*5:0);
+  return status+Number(o.fit_score||0)+richness-(Number(o.id||0)/1000000);
+}
+async function reconcileOpportunityDuplicates(clientId=null){
+  const args=[],where=["duplicate_of is null"];
+  if(clientId){args.push(Number(clientId));where.push("client_id=$"+args.length)}
+  const q=await pool.query("select * from intel_opportunities where "+where.join(" and ")+" order by client_id,id",args);
+  const rows=q.rows,groups=[];
+  for(const row of rows){
+    let group=groups.find(g=>g.some(x=>opportunitiesAreSame(x,row)));
+    if(group) group.push(row); else groups.push([row]);
+  }
+  let marked=0;
+  for(const group of groups.filter(g=>g.length>1)){
+    group.sort((a,b)=>oppCanonicalScore(b)-oppCanonicalScore(a));
+    const canonical=group[0];
+    for(const dup of group.slice(1)){
+      await pool.query("update intel_opportunity_artifacts a set opportunity_id=$1 where a.opportunity_id=$2 and not exists(select 1 from intel_opportunity_artifacts x where x.opportunity_id=$1 and x.artifact_type=a.artifact_type and x.status in ('ready','generating'))",[canonical.id,dup.id]);
+      await pool.query("update intel_opportunities set duplicate_of=$1,updated_at=now() where id=$2",[canonical.id,dup.id]);
+      marked++;
+    }
+  }
+  return {marked};
+}
 async function repairOpportunityDates(){
   const q=await pool.query("select id,title,summary,recommendation,deadline,qa_deadline from intel_opportunities where deadline is null or qa_deadline is null");
   for(const o of q.rows){
@@ -686,6 +753,7 @@ async function runProgram(program,client,options={}){
     const meta={source_plan:program.source_plan||[],action_plan:program.action_plan||[],cadence:program.cadence,model:(response&&response.model)||AI_MODEL,program_type:program.program_type,usage:(response&&response.usage)||{},response_id:(response&&response.response_id)||null,rejected_notes:Array.isArray(out.rejected_notes)?out.rejected_notes.slice(0,12):[]};
     await pool.query("update intel_programs set last_run_at=now() where id=$1",[program.id]);
     await pool.query("update intel_runs set status='done',summary=$1,accepted_count=$2,rejected_count=$3,run_meta=$4,finished_at=now() where id=$5",[out.summary||"",accepted,rejected,JSON.stringify(meta),runId]);
+    if(program.program_type==="opportunity"){try{await reconcileOpportunityDuplicates(client.id)}catch(e){app.log.error({err:e,clientId:client.id},"opportunity dedupe failed")}}
     if(!options.suppressUrgent){try{await sendUrgentAlertsForRun(runId,client.id)}catch{}}
     return {runId,status:"done",count:accepted,rejected:rejected};
   }catch(e){
@@ -786,7 +854,7 @@ app.get("/api/portal/dashboard",async function(req,reply){
   const id=u.client_id;
   const all=await Promise.all([
     pool.query("select s.*,p.name program_name,p.program_type from intel_signals s join intel_programs p on p.id=s.program_id where s.client_id=$1 and s.client_visible=true and p.client_visible=true order by s.created_at desc limit 100",[id]),
-    pool.query("select o.* from intel_opportunities o join intel_programs p on p.id=o.program_id where o.client_id=$1 and p.active=true and p.client_visible=true order by case o.pursuit_status when 'pursue' then 0 when 'review' then 1 else 2 end,coalesce(o.deadline,'2999-12-31') asc,o.created_at desc",[id]),
+    pool.query("select o.* from intel_opportunities o join intel_programs p on p.id=o.program_id where o.client_id=$1 and o.duplicate_of is null and p.active=true and p.client_visible=true order by case o.pursuit_status when 'pursue' then 0 when 'submitted' then 1 when 'review' then 2 else 3 end,coalesce(o.deadline,'2999-12-31') asc,o.created_at desc",[id]),
     pool.query("select a.*,s.title signal_title,s.what_changed signal_what_changed,s.why_it_matters signal_why_it_matters from intel_actions a left join intel_signals s on s.id=a.signal_id left join intel_programs p on p.id=a.program_id where a.client_id=$1 and a.action_scope='priority' and a.superseded=false and (p.id is null or p.client_visible=true) order by case when a.status='proposed' then 0 when a.status in ('requested','in_progress') then 1 else 2 end,a.priority_score desc,a.created_at desc limit 50",[id]),
     pool.query("select id,name,program_type,cadence,objective,last_run_at from intel_programs where client_id=$1 and active=true and client_visible=true order by name",[id]),
     pool.query("select id,client_id,connector_type,name,status from intel_connectors where client_id=$1 order by id",[id]),
@@ -949,7 +1017,7 @@ app.get("/api/dashboard",async function(){
     pool.query("select s.*,c.name client_name,p.name program_name from intel_signals s join intel_clients c on c.id=s.client_id join intel_programs p on p.id=s.program_id order by s.created_at desc limit 80"),
     pool.query("select a.*,c.name client_name,s.title signal_title from intel_actions a join intel_clients c on c.id=a.client_id left join intel_signals s on s.id=a.signal_id order by a.created_at desc limit 120"),
     pool.query("select r.*,p.name program_name,c.name client_name from intel_runs r join intel_programs p on p.id=r.program_id join intel_clients c on c.id=r.client_id order by r.created_at desc limit 30"),
-    pool.query("select o.*,c.name client_name,p.name program_name from intel_opportunities o join intel_clients c on c.id=o.client_id left join intel_programs p on p.id=o.program_id order by coalesce(o.deadline,'2999-12-31') asc,o.created_at desc limit 120")
+    pool.query("select o.*,c.name client_name,p.name program_name from intel_opportunities o join intel_clients c on c.id=o.client_id left join intel_programs p on p.id=o.program_id where o.duplicate_of is null order by coalesce(o.deadline,'2999-12-31') asc,o.created_at desc limit 120")
   ]);
   return {clients:all[0].rows,programs:all[1].rows,signals:all[2].rows,actions:all[3].rows,runs:all[4].rows,opportunities:all[5].rows,aiConfigured:await hasAIKey()};
 });
@@ -967,7 +1035,7 @@ app.get("/api/clients/:id",async function(req,reply){
     pool.query("select * from intel_signals where client_id=$1 order by created_at desc limit 80",[id]),
     pool.query("select * from intel_actions where client_id=$1 order by created_at desc limit 120",[id]),
     pool.query("select id,client_id,connector_type,name,status,created_at from intel_connectors where client_id=$1 order by created_at",[id]),
-    pool.query("select * from intel_opportunities where client_id=$1 order by coalesce(deadline,'2999-12-31') asc,created_at desc",[id]),
+    pool.query("select * from intel_opportunities where client_id=$1 and duplicate_of is null order by coalesce(deadline,'2999-12-31') asc,created_at desc",[id]),
     pool.query("select id,client_id,email,name,active,brief_recipient,urgent_recipient,last_login_at,created_at from intel_client_users where client_id=$1 order by email",[id]),
     pool.query("select brief_enabled,urgent_enabled,updated_at from intel_delivery_settings where client_id=$1",[id]),
     pool.query("select status,sent_at,new_signal_count,open_action_count,open_opportunity_count,error from intel_brief_deliveries where client_id=$1 order by sent_at desc limit 8",[id])
