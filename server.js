@@ -155,7 +155,11 @@ async function hasAIKey(){return Boolean(await getAIKey())}
 async function getEmailConfig(){
   const dbKey=await getSetting("resend_api_key");
   const dbFrom=await getSetting("email_from");
-  return {key:dbKey||ENV_RESEND_KEY,from:dbFrom||ENV_EMAIL_FROM};
+  return {key:ENV_RESEND_KEY||dbKey,from:dbFrom||ENV_EMAIL_FROM};
+}
+function fromDomain(value){
+  const m=String(value||"").match(/<?[A-Z0-9._%+-]+@([A-Z0-9.-]+\.[A-Z]{2,})>?/i);
+  return m?m[1].toLowerCase():"";
 }
 async function sendEmail(to,subject,html,textBody){
   const cfg=await getEmailConfig();
@@ -807,7 +811,7 @@ app.post("/api/actions/:id/dismiss",async function(req){
 });
 app.get("/api/settings/status",async function(){
   const key=await getAIKey(),email=await getEmailConfig(),dbEmailKey=await getSetting("resend_api_key");
-  return {aiConfigured:Boolean(key),source:(await getSetting("openai_api_key"))?"dashboard":(ENV_AI_KEY?"environment":"none"),masked:key?("••••"+key.slice(-4)):"",emailConfigured:Boolean(email.key&&email.from),emailSource:dbEmailKey?"dashboard":(ENV_RESEND_KEY?"environment":"none"),emailMasked:email.key?("••••"+email.key.slice(-4)):"",emailFrom:email.from||""};
+  return {aiConfigured:Boolean(key),source:(await getSetting("openai_api_key"))?"dashboard":(ENV_AI_KEY?"environment":"none"),masked:key?("••••"+key.slice(-4)):"",emailConfigured:Boolean(email.key&&email.from),emailSource:ENV_RESEND_KEY?"environment":(dbEmailKey?"dashboard":"none"),emailMasked:email.key?("••••"+email.key.slice(-4)):"",emailFrom:email.from||""};
 });
 app.post("/api/settings/openai",async function(req,reply){
   if(!SETTINGS_CODE) return reply.code(503).send({error:"Settings access code is not configured"});
@@ -837,8 +841,18 @@ app.post("/api/settings/email",async function(req,reply){
   if(!from||!from.includes("@")) return reply.code(400).send({error:"Enter a valid From address"});
   try{
     const r=await fetch("https://api.resend.com/domains",{headers:{Authorization:"Bearer "+key}});
+    const body=await r.json().catch(()=>({}));
     if(!r.ok) return reply.code(400).send({error:"Resend rejected that API key"});
-  }catch{return reply.code(502).send({error:"Could not verify the Resend API key"})}
+    const wanted=fromDomain(from);
+    const domains=Array.isArray(body.data)?body.data:(Array.isArray(body)?body:[]);
+    const match=domains.find(d=>String(d.name||"").toLowerCase()===wanted);
+    if(!wanted) return reply.code(400).send({error:"Could not determine the domain from the From address"});
+    if(!match) return reply.code(400).send({error:"The From domain "+wanted+" is not added to the Resend account for this API key"});
+    if(String(match.status||"").toLowerCase()!=="verified") return reply.code(400).send({error:"The From domain "+wanted+" is not verified in the Resend account for this API key"});
+  }catch(e){
+    if(e&&e.message) return reply.code(502).send({error:"Could not verify the Resend domain: "+e.message});
+    return reply.code(502).send({error:"Could not verify the Resend API key"});
+  }
   await setSetting("resend_api_key",key);
   await setSetting("email_from",from);
   return {ok:true,masked:"••••"+key.slice(-4),from:from};
