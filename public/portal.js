@@ -1,6 +1,6 @@
 const q=s=>document.querySelector(s);
 const qa=s=>Array.from(document.querySelectorAll(s));
-const state={me:null,data:null,view:"overview",intelProgram:"all",oppSort:"fit",oppStatus:"active",expandedActions:{},detailOppId:null};
+const state={me:null,data:null,view:"overview",intelProgram:"all",oppSort:"fit",oppStatus:"active",expandedActions:{},detailOppId:null,detailSignalId:null};
 
 function esc(v){return String(v==null?"":v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 function nice(v){return String(v||"").replaceAll("_"," ").replace(/\b\w/g,c=>c.toUpperCase())}
@@ -43,16 +43,51 @@ function intelligenceMeta(meta){
   if(!keys.length) return "";
   return '<div class="intel-meta">'+keys.map(k=>'<div><span>'+esc(nice(k))+'</span><b>'+esc(typeof meta[k]==="object"?JSON.stringify(meta[k]):meta[k])+'</b></div>').join("")+'</div>';
 }
+function intelligenceMetaInline(meta){
+  if(!meta||typeof meta!=="object") return "";
+  const preferred=["competitor","company","account","trigger","change_type","platform","metric","regulator","topic","effective_date"];
+  const keys=preferred.filter(k=>meta[k]!==undefined&&meta[k]!==null&&String(meta[k]).trim()!=="").slice(0,3);
+  if(!keys.length) return "";
+  return '<div class="intel-inline-meta">'+keys.map(k=>'<span><b>'+esc(nice(k))+':</b> '+esc(typeof meta[k]==="object"?JSON.stringify(meta[k]):meta[k])+'</span>').join("")+'</div>';
+}
 function signalCard(s){
   const importance=s.importance>=3?"priority":"standard";
-  return '<article id="signal-'+s.id+'" class="intel-item '+importance+'">'+
-    '<div class="intel-rail"><span></span></div>'+
-    '<div class="intel-body"><div class="row"><div><div class="intel-kicker">'+esc(s.program_name||"Intelligence")+'</div><h3>'+esc(s.title)+'</h3></div><span class="confidence">'+esc(s.confidence||70)+'% confidence</span></div>'+
-    '<div class="intel-section"><span>WHAT CHANGED</span><p>'+esc(s.what_changed)+'</p></div>'+
-    intelligenceMeta(s.metadata)+
-    '<div class="intel-section matter"><span>WHY IT MATTERS</span><p>'+esc(s.why_it_matters)+'</p></div>'+
-    '<div class="intel-footer"><span>'+ago(s.created_at)+'</span>'+(s.source_url?'<a target="_blank" href="'+esc(s.source_url)+'">View source ↗</a>':'')+'</div></div></article>';
+  return '<article id="signal-'+s.id+'" class="intel-item compact-intel '+importance+'">'+
+    '<div class="intel-summary-main">'+
+      '<div class="intel-card-top"><div><div class="intel-kicker">'+esc(s.program_name||"Intelligence")+'</div><h3>'+esc(s.title)+'</h3></div><span class="confidence">'+esc(s.confidence||70)+'%</span></div>'+
+      '<p class="intel-what">'+esc(s.what_changed||"")+'</p>'+
+      '<div class="intel-why-line"><b>Why it matters:</b> '+esc(s.why_it_matters||"")+'</div>'+
+      intelligenceMetaInline(s.metadata)+
+    '</div>'+
+    '<div class="intel-card-footer"><span>'+ago(s.created_at)+'</span><div>'+(s.source_url?'<a class="btn small secondary" target="_blank" href="'+esc(s.source_url)+'">Source ↗</a>':'')+'<button class="btn small" onclick="openSignalDetails('+s.id+')">Details</button></div></div>'+
+  '</article>';
 }
+function signalDetailModal(){
+  if(!state.detailSignalId) return "";
+  const sig=(state.data.signals||[]).find(x=>String(x.id)===String(state.detailSignalId));
+  if(!sig) return "";
+  return '<div class="intel-modal-backdrop" onclick="closeSignalDetails(event)">'+
+    '<div class="intel-modal" role="dialog" aria-modal="true" aria-label="'+esc(sig.title)+'" onclick="event.stopPropagation()">'+
+      '<div class="intel-modal-head"><div><div class="intel-kicker">'+esc(sig.program_name||"Intelligence")+'</div><h2>'+esc(sig.title)+'</h2></div><button class="modal-close" onclick="closeSignalDetails()">×</button></div>'+
+      '<div class="intel-modal-body">'+
+        '<section class="intel-modal-section"><span>WHAT CHANGED</span><p>'+esc(sig.what_changed||"")+'</p></section>'+
+        intelligenceMeta(sig.metadata)+
+        '<section class="intel-modal-section matter"><span>WHY IT MATTERS</span><p>'+esc(sig.why_it_matters||"")+'</p></section>'+
+      '</div>'+
+      '<div class="intel-modal-footer"><span>'+esc(sig.confidence||70)+'% confidence · '+ago(sig.created_at)+'</span>'+(sig.source_url?'<a class="btn small secondary" target="_blank" href="'+esc(sig.source_url)+'">View source ↗</a>':'')+'<button class="btn small" onclick="closeSignalDetails()">Close</button></div>'+
+    '</div></div>';
+}
+window.openSignalDetails=function(id){
+  state.detailSignalId=String(id);
+  document.body.classList.add("modal-open");
+  render();
+};
+window.closeSignalDetails=function(event){
+  if(event&&event.target!==event.currentTarget)return;
+  state.detailSignalId=null;
+  document.body.classList.remove("modal-open");
+  render();
+};
 
 function canAutoExecute(a){
   const types=(state.data.connectors||[]).map(c=>c.connector_type);
@@ -428,7 +463,7 @@ function intelligence(){
   const tabs='<div class="intel-filters"><button class="intel-filter '+(state.intelProgram==="all"?"active":"")+'" onclick="setIntelProgram(\'all\')">All Intelligence <span>'+state.data.signals.filter(sig=>sig.program_type!=="opportunity").length+'</span></button>'+
     programs.map(p=>'<button class="intel-filter '+(String(state.intelProgram)===String(p.id)?"active":"")+'" onclick="setIntelProgram(\''+p.id+'\')">'+esc(p.name)+' <span>'+state.data.signals.filter(sig=>String(sig.program_id)===String(p.id)).length+'</span></button>').join("")+'</div>';
   return '<div class="page-intro intel-intro"><div class="page-icon">◉</div><div><h2>Intelligence</h2><p>This is what Lucid Logic found and why it matters. Filter by the intelligence program you care about, or view everything together.</p></div></div>'+
-  tabs+'<div class="intel-feed">'+(items.map(signalCard).join("")||'<div class="empty">No intelligence items in this view yet.</div>')+'</div>';
+  tabs+'<div class="intel-feed">'+(items.map(signalCard).join("")||'<div class="empty">No intelligence items in this view yet.</div>')+'</div>'+signalDetailModal();
 }
 window.setIntelProgram=function(id){state.intelProgram=String(id);render()};
 
@@ -476,6 +511,7 @@ function applyUrlIntent(){
   if(intent.view&&views[intent.view]) state.view=intent.view;
   if(intent.action) state.expandedActions[intent.action]=true;
   if(intent.opp){state.detailOppId=String(intent.opp);document.body.classList.add("modal-open")}
+  if(intent.signal){state.detailSignalId=String(intent.signal);document.body.classList.add("modal-open")}
   render();
   const target=intent.action?("action-"+intent.action):intent.opp?("opp-"+intent.opp):intent.signal?("signal-"+intent.signal):"";
   if(target){
