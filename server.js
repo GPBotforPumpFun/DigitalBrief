@@ -64,7 +64,9 @@ const schema = [
 "alter table intel_opportunities add column if not exists pursuit_owner text",
 "alter table intel_opportunities add column if not exists pursued_at timestamptz",
 "create table if not exists intel_opportunity_artifacts(id serial primary key,opportunity_id int not null references intel_opportunities(id) on delete cascade,client_id int not null references intel_clients(id) on delete cascade,artifact_type text not null,title text,body text,notes text,status text not null default 'generating',error text,created_at timestamptz not null default now(),updated_at timestamptz not null default now())",
-"create index if not exists ix_opp_artifacts_opp_type on intel_opportunity_artifacts(opportunity_id,artifact_type,created_at desc)"
+"create index if not exists ix_opp_artifacts_opp_type on intel_opportunity_artifacts(opportunity_id,artifact_type,created_at desc)",
+"create table if not exists intel_action_artifacts(id serial primary key,action_id int not null references intel_actions(id) on delete cascade,client_id int not null references intel_clients(id) on delete cascade,tactic_key text not null,artifact_type text not null,title text,body text,notes text,status text not null default 'generating',error text,created_at timestamptz not null default now(),updated_at timestamptz not null default now(),unique(action_id,tactic_key))",
+"create index if not exists ix_action_artifacts_action on intel_action_artifacts(action_id,created_at desc)"
 ];
 
 function encrypt(obj){
@@ -788,9 +790,10 @@ app.get("/api/portal/dashboard",async function(req,reply){
     pool.query("select a.*,s.title signal_title,s.what_changed signal_what_changed,s.why_it_matters signal_why_it_matters from intel_actions a left join intel_signals s on s.id=a.signal_id left join intel_programs p on p.id=a.program_id where a.client_id=$1 and a.action_scope='priority' and a.superseded=false and (p.id is null or p.client_visible=true) order by case when a.status='proposed' then 0 when a.status in ('requested','in_progress') then 1 else 2 end,a.priority_score desc,a.created_at desc limit 50",[id]),
     pool.query("select id,name,program_type,cadence,objective,last_run_at from intel_programs where client_id=$1 and active=true and client_visible=true order by name",[id]),
     pool.query("select id,client_id,connector_type,name,status from intel_connectors where client_id=$1 order by id",[id]),
-    pool.query("select * from intel_opportunity_artifacts where client_id=$1 order by created_at desc limit 100",[id])
+    pool.query("select * from intel_opportunity_artifacts where client_id=$1 order by created_at desc limit 100",[id]),
+    pool.query("select * from intel_action_artifacts where client_id=$1 order by created_at desc limit 100",[id])
   ]);
-  return {signals:all[0].rows,opportunities:all[1].rows,actions:all[2].rows,programs:all[3].rows,connectors:all[4].rows,opportunityArtifacts:all[5].rows};
+  return {signals:all[0].rows,opportunities:all[1].rows,actions:all[2].rows,programs:all[3].rows,connectors:all[4].rows,opportunityArtifacts:all[5].rows,actionArtifacts:all[6].rows};
 });
 app.post("/api/portal/opportunities/:id/status",async function(req,reply){
   const u=await requirePortalUser(req,reply);
@@ -848,6 +851,65 @@ app.get("/api/portal/opportunity-artifacts/:id",async function(req,reply){
   if(!q.rows[0]) return reply.code(404).send({error:"Work product not found"});
   return q.rows[0];
 });
+app.post("/api/portal/actions/:id/work-products",async function(req,reply){
+  const u=await requirePortalUser(req,reply);
+  if(!u) return;
+  const actionId=Number(req.params.id);
+  const b=req.body||{};
+  const tactic=String(b.tactic||"").trim();
+  const tacticIndex=Number(b.tactic_index||0);
+  const artifactType=String(b.artifact_type||"assist").trim();
+  if(!tactic) return reply.code(400).send({error:"Supporting tactic required"});
+  const aq=await pool.query("select a.*,s.title signal_title,s.what_changed,s.why_it_matters,s.source_url,p.name program_name from intel_actions a left join intel_signals s on s.id=a.signal_id left join intel_programs p on p.id=a.program_id where a.id=$1 and a.client_id=$2",[actionId,u.client_id]);
+  const action=aq.rows[0];
+  if(!action) return reply.code(404).send({error:"Action not found"});
+  const tacticKey=crypto.createHash("sha256").update(String(tacticIndex)+"|"+tactic.toLowerCase()).digest("hex").slice(0,24);
+  const existing=await pool.query("select * from intel_action_artifacts where action_id=$1 and tactic_key=$2 order by updated_at desc limit 1",[actionId,tacticKey]);
+  if(existing.rows[0]){
+    const a=existing.rows[0];
+    return reply.code(a.status==="generating"?202:200).send({artifactId:a.id,status:a.status,reused:true,message:a.status==="generating"?"This work product is already being built.":"This work product is already available below."});
+  }
+  const ar=await pool.query("insert into intel_action_artifacts(action_id,client_id,tactic_key,artifact_type,title,status) values($1,$2,$3,$4,$5,'generating') returning *",[actionId,u.client_id,tacticKey,artifactType,tactic]);
+  const artifact=ar.rows[0];
+
+  setImmediate(async function(){
+    try{
+      const common="CLIENT: "+u.client_name+"; website "+(u.website_url||"")+"; industry "+(u.industry||"")+"; geography "+(u.geography||"")+"; objective "+(u.objective||"")+". PRIMARY ACTION: "+action.title+". RATIONALE: "+(action.rationale||"")+". BUSINESS OUTCOME: "+(action.business_outcome||"")+". TARGET AUDIENCE: "+(action.target_audience||"")+". SUPPORTING TACTIC: "+tactic+". SOURCE INTELLIGENCE: "+(action.signal_title||"")+"; "+(action.what_changed||action.signal_what_changed||"")+"; "+(action.why_it_matters||action.signal_why_it_matters||"")+". SOURCE URL: "+(action.source_url||"")+".";
+      let instruction="";
+      let useWeb=false;
+      if(artifactType==="prospect_list"){
+        useWeb=true;
+        instruction="Build a practical first-pass prospect/account list that the client can actually use for outreach. Find 15 to 25 real organizations that match the tactic, geography and source intelligence. Do not invent people, emails or phone numbers. Prefer official organization websites and trustworthy public sources. Return plain text with a short targeting note followed by a markdown-style table with columns: Organization | Location | Segment | Why it fits | Suggested angle | Website/source. Rank the strongest prospects first. If the tactic is about existing clients but no client roster was supplied, explicitly say that the list is net-new prospects and recommend applying the same criteria to the client's own account list.";
+      }else if(artifactType==="outreach_draft"){
+        instruction="Create a ready-to-use outreach package for this tactic. Include: target audience, one concise email subject line, a short email body, a shorter LinkedIn/direct-message version, and a one-sentence call-to-action. Keep it specific to the intelligence and avoid hype.";
+      }else if(artifactType==="content_draft"){
+        instruction="Create the first-pass digital content needed to execute this tactic. Include a recommended headline, page/post structure, finished draft copy, CTA, and any factual claims that still need verification. Do not invent credentials, case studies or statistics.";
+      }else if(artifactType==="social_draft"){
+        instruction="Create two concise social post options based on this tactic: one straightforward and one more conversational. Include suggested CTA and 3 to 5 relevant hashtags. Do not overstate the intelligence.";
+      }else if(artifactType==="checklist"){
+        instruction="Turn this tactic into a concrete execution checklist. Give ordered steps, what information is needed, who should own each step, what can be completed quickly, and the exact definition of done. Keep it practical and short.";
+      }else{
+        instruction="Do the useful first-pass work required by this tactic. Produce something concrete the client can use immediately, not generic advice. Include the deliverable, exact next steps, and any information still needed from the client.";
+      }
+      const prompt=instruction+" "+common+" Return ONLY JSON with title, body and notes.";
+      const out=parseJson(await openai(prompt,useWeb));
+      const payload=out||{title:tactic,body:"Unable to generate a detailed work product.",notes:"Please try again."};
+      await pool.query("update intel_action_artifacts set title=$1,body=$2,notes=$3,status='ready',updated_at=now() where id=$4",[payload.title||tactic,payload.body||"",payload.notes||"",artifact.id]);
+    }catch(e){
+      await pool.query("update intel_action_artifacts set status='failed',error=$1,updated_at=now() where id=$2",[String(e.message||e),artifact.id]);
+      app.log.error({err:e,artifactId:artifact.id,actionId:actionId},"action work product generation failed");
+    }
+  });
+  return reply.code(202).send({artifactId:artifact.id,status:"generating",message:"Building this for you now. The result will stay attached to this next step."});
+});
+app.get("/api/portal/action-artifacts/:id",async function(req,reply){
+  const u=await requirePortalUser(req,reply);
+  if(!u) return;
+  const q=await pool.query("select * from intel_action_artifacts where id=$1 and client_id=$2",[Number(req.params.id),u.client_id]);
+  if(!q.rows[0]) return reply.code(404).send({error:"Work product not found"});
+  return q.rows[0];
+});
+
 app.post("/api/portal/actions/:id/approve",async function(req,reply){
   const u=await requirePortalUser(req,reply);
   if(!u) return;
