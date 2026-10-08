@@ -202,11 +202,11 @@ function opportunityCard(o){
     :o.pursuit_status==="submitted"
       ?'<button class="btn small" onclick="setOpp('+o.id+',\'won\')">Mark Won</button><button class="btn small danger" onclick="setOpp('+o.id+',\'lost\')">Mark Lost</button>'
       :"";
-  return '<article id="opp-'+o.id+'" class="opportunity-card"><div class="row"><div><div class="meta"><span>'+esc(nice(o.opportunity_type||"opportunity"))+'</span><span>•</span><span>'+esc(nice(o.pursuit_status))+'</span></div><h3>'+esc(o.title)+'</h3></div><div class="fit-score"><strong>'+esc(o.fit_score||0)+'</strong><span>FIT</span></div></div>'+
+  return '<article id="opp-'+o.id+'" class="opportunity-card status-'+esc(o.pursuit_status||"review")+'"><div class="opp-card-head"><div class="row"><div><div class="meta"><span>'+esc(nice(o.opportunity_type||"opportunity"))+'</span><span>•</span><span>'+esc(nice(o.pursuit_status))+'</span></div><h3>'+esc(o.title)+'</h3></div><div class="fit-score"><strong>'+esc(o.fit_score||0)+'</strong><span>FIT</span></div></div></div>'+
   '<p>'+esc(o.summary||"")+'</p><div class="opp-meta"><div><span>Proposal due</span><b>'+esc(due)+'</b></div><div><span>Q&A due</span><b>'+esc(qaDue)+'</b></div><div><span>Est. value</span><b>'+esc(o.estimated_value||"Unknown")+'</b></div><div><span>Geography</span><b>'+esc(o.geography||"Unknown")+'</b></div></div>'+
   (o.recommendation?'<div class="why"><b>Lucid Logic recommendation:</b> '+esc(o.recommendation)+'</div>':'')+reqs+pursuit+
   '<div class="opp-action-explainer"><b>Your team owns the pursuit</b><span>Mark Pursue when you want to go after it. Generate Questions and Proposal Draft are self-service tools that stay here. Your team reviews, finalizes and submits the response.</span></div>'+
-  '<div class="actions">'+(source?'<a class="btn small" target="_blank" href="'+esc(source)+'">View RFP / source ↗</a>':'')+
+  '<div class="actions opp-actions-bar">'+(source?'<a class="btn small" target="_blank" href="'+esc(source)+'">View RFP / source ↗</a>':'')+
   (o.pursuit_status==="review"?'<button class="btn small" onclick="setOpp('+o.id+',\'pursue\')">Mark Pursue</button>':'')+
   (!["pass","won","lost"].includes(o.pursuit_status)?'<button class="btn small danger" onclick="setOpp('+o.id+',\'pass\')">Pass</button>':'')+
   lifecycle+
