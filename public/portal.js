@@ -61,15 +61,19 @@ function canAutoExecute(a){
   return false;
 }
 function actionDecisionLabel(a){
-  if(canAutoExecute(a)&&a.action_type==="website_post") return "Approve & Send to Website";
-  if(canAutoExecute(a)&&a.action_type==="social_post") return "Approve & Publish";
-  return "Request Lucid Logic Action";
+  if(a.owner_type==="lucid_logic"){
+    if(canAutoExecute(a)&&a.action_type==="website_post") return "Approve & Send to Website";
+    if(canAutoExecute(a)&&a.action_type==="social_post") return "Approve & Publish";
+    return "Request Lucid Logic";
+  }
+  return "Add to My Next Steps";
 }
 function actionStatusMessage(a){
   if(a.status==="requested") return '<div class="managed-status requested"><b>Requested from Lucid Logic</b><span>Lucid Logic owns the next step. Nothing has been marked complete yet.</span></div>';
-  if(a.status==="in_progress") return '<div class="managed-status progress"><b>In progress with Lucid Logic</b><span>This work is underway and will remain here until it is marked complete.</span></div>';
+  if(a.status==="in_progress"&&a.owner_type==="lucid_logic") return '<div class="managed-status progress"><b>In progress with Lucid Logic</b><span>This managed work is underway and will remain here until Lucid Logic marks it complete.</span></div>';
+  if(a.status==="in_progress") return '<div class="managed-status progress client-progress"><b>Your next step</b><span>Your team owns this action. Mark it complete when you have actually done it.</span></div>';
   if(a.status==="executed") return '<div class="managed-status complete"><b>Executed through a connected system</b><span>The connected channel completed this action.</span></div>';
-  if(a.status==="completed") return '<div class="managed-status complete"><b>Completed by Lucid Logic</b><span>This managed action has been marked complete.</span></div>';
+  if(a.status==="completed") return '<div class="managed-status complete"><b>Completed</b><span>This action has been marked complete.</span></div>';
   return "";
 }
 function actionCard(a){
@@ -92,8 +96,10 @@ function actionCard(a){
     context+tactics+
     (body?'<div class="deliverable-preview"><div class="deliverable-label">PREPARED FOR YOU</div><div class="deliverable-body">'+esc(body)+'</div></div>':'')+
     (note?'<p class="note">'+esc(note)+'</p>':'')+
+    (a.client_step?'<div class="client-step"><span>NEXT STEP</span><b>'+esc(a.client_step)+'</b></div>':'')+
     actionStatusMessage(a)+
-    (pending?'<div class="action-decision-note">This does not mark the work complete. If the channel is connected, the system can execute it. Otherwise it becomes a managed Lucid Logic task.</div><div class="actions"><button class="btn gold small" onclick="approveAction('+a.id+')">'+esc(actionDecisionLabel(a))+'</button></div>':'')+
+    (pending?'<div class="action-decision-note">'+(a.owner_type==="lucid_logic"?"If you request this, Lucid Logic will own the work. It will stay visible until actually completed.":"This is your team\'s action. Adding it to My Next Steps does not send anything or involve Lucid Logic.")+'</div><div class="actions"><button class="btn gold small" onclick="approveAction('+a.id+')">'+esc(actionDecisionLabel(a))+'</button></div>':'')+
+    (a.status==="in_progress"&&a.owner_type!=="lucid_logic"?'<div class="actions"><button class="btn gold small" onclick="completeMyAction('+a.id+')">Mark Complete</button></div>':'')+
     '<div class="action-time">'+ago(a.created_at)+'</div></div></article>';
 }
 
@@ -116,7 +122,10 @@ function opportunityDateValue(value){
   return Number.isNaN(d.getTime())?Number.MAX_SAFE_INTEGER:d.getTime();
 }
 function artifactsForOpportunity(id){
-  return (state.data.opportunityArtifacts||[]).filter(a=>String(a.opportunity_id)===String(id));
+  const rows=(state.data.opportunityArtifacts||[]).filter(a=>String(a.opportunity_id)===String(id));
+  const byType={};
+  rows.forEach(a=>{if(!byType[a.artifact_type])byType[a.artifact_type]=a});
+  return Object.values(byType);
 }
 function artifactCard(a){
   if(a.status==="generating") return '<div class="opp-artifact generating"><div><b>'+esc(a.artifact_type==="proposal"?"Proposal draft":"Questions")+'</b><span>Generating now. You can leave this page and come back.</span></div><div class="artifact-spinner">…</div></div>';
@@ -134,21 +143,32 @@ function opportunityCard(o){
   const qaDue=opportunityDate(o.qa_deadline);
   const reqs=Array.isArray(o.requirements)&&o.requirements.length?'<div class="opp-req"><b>Key requirements</b><ul>'+o.requirements.slice(0,8).map(r=>'<li>'+esc(typeof r==="string"?r:JSON.stringify(r))+'</li>').join("")+'</ul></div>':"";
   const artifacts=artifactsForOpportunity(o.id);
-  const generatingQ=artifacts.some(a=>a.artifact_type==="questions"&&a.status==="generating");
-  const generatingP=artifacts.some(a=>a.artifact_type==="proposal"&&a.status==="generating");
+  const qArt=artifacts.find(a=>a.artifact_type==="questions");
+  const pArt=artifacts.find(a=>a.artifact_type==="proposal");
+  const generatingQ=qArt&&qArt.status==="generating";
+  const generatingP=pArt&&pArt.status==="generating";
+  const readyQ=qArt&&qArt.status==="ready";
+  const readyP=pArt&&pArt.status==="ready";
   const artifactHtml=artifacts.length?'<div class="pursuit-work-products"><div class="work-products-label">PURSUIT WORKSPACE</div>'+artifacts.map(artifactCard).join("")+'</div>':"";
-  const pursuit=o.pursuit_status==="pursue"
-    ?'<div class="pursuit-active"><b>Active pursuit</b><span>You have decided to pursue this opportunity. Nothing has been submitted externally. Questions and proposal drafts generated below stay in this workspace until you decide what to do with them.</span></div>'
+  const active=["pursue","submitted"].includes(o.pursuit_status);
+  const pursuit=active
+    ?'<div class="pursuit-active"><b>'+esc(o.pursuit_status==="submitted"?"Submitted":"Active pursuit")+'</b><span>'+(o.pursuit_status==="submitted"?"Your team has marked the response submitted. Track the outcome here.":"Your team owns the response and submission. Lucid Logic supplies the intelligence and drafting tools, but nothing is submitted for you.")+'</span></div>'
     :"";
+  const lifecycle=o.pursuit_status==="pursue"
+    ?'<button class="btn small" onclick="setOpp('+o.id+',\'submitted\')">Mark Submitted</button>'
+    :o.pursuit_status==="submitted"
+      ?'<button class="btn small" onclick="setOpp('+o.id+',\'won\')">Mark Won</button><button class="btn small danger" onclick="setOpp('+o.id+',\'lost\')">Mark Lost</button>'
+      :"";
   return '<article id="opp-'+o.id+'" class="opportunity-card"><div class="row"><div><div class="meta"><span>'+esc(nice(o.opportunity_type||"opportunity"))+'</span><span>•</span><span>'+esc(nice(o.pursuit_status))+'</span></div><h3>'+esc(o.title)+'</h3></div><div class="fit-score"><strong>'+esc(o.fit_score||0)+'</strong><span>FIT</span></div></div>'+
   '<p>'+esc(o.summary||"")+'</p><div class="opp-meta"><div><span>Proposal due</span><b>'+esc(due)+'</b></div><div><span>Q&A due</span><b>'+esc(qaDue)+'</b></div><div><span>Est. value</span><b>'+esc(o.estimated_value||"Unknown")+'</b></div><div><span>Geography</span><b>'+esc(o.geography||"Unknown")+'</b></div></div>'+
   (o.recommendation?'<div class="why"><b>Lucid Logic recommendation:</b> '+esc(o.recommendation)+'</div>':'')+reqs+pursuit+
-  '<div class="opp-action-explainer"><b>What these buttons do</b><span>Pursue only marks the opportunity active. Generate buttons create drafts here. Nothing is emailed, submitted or sent to the issuer automatically.</span></div>'+
+  '<div class="opp-action-explainer"><b>Your team owns the pursuit</b><span>Mark Pursue when you want to go after it. Generate Questions and Proposal Draft are self-service tools that stay here. Your team reviews, finalizes and submits the response.</span></div>'+
   '<div class="actions">'+(source?'<a class="btn small" target="_blank" href="'+esc(source)+'">View RFP / source ↗</a>':'')+
-  (o.pursuit_status==="pursue"?'<button class="btn small active-state" disabled>Pursuing</button>':'<button class="btn small" onclick="setOpp('+o.id+',\'pursue\')">Mark Pursue</button>')+
-  '<button class="btn small danger" onclick="setOpp('+o.id+',\'pass\')">Pass</button>'+
-  '<button class="btn small" '+(generatingQ?'disabled':'onclick="generateOpp('+o.id+',\'questions\')"')+'>'+(generatingQ?'Generating Questions…':'Generate Questions')+'</button>'+
-  '<button class="btn gold small" '+(generatingP?'disabled':'onclick="generateOpp('+o.id+',\'proposal\')"')+'>'+(generatingP?'Generating Draft…':'Generate Proposal Draft')+'</button></div>'+artifactHtml+'</article>';
+  (o.pursuit_status==="review"?'<button class="btn small" onclick="setOpp('+o.id+',\'pursue\')">Mark Pursue</button>':'')+
+  (!["pass","won","lost"].includes(o.pursuit_status)?'<button class="btn small danger" onclick="setOpp('+o.id+',\'pass\')">Pass</button>':'')+
+  lifecycle+
+  '<button class="btn small" '+(generatingQ||readyQ?'disabled':'onclick="generateOpp('+o.id+',\'questions\')"')+'>'+(generatingQ?'Generating Questions…':readyQ?'Questions Ready':'Generate Questions')+'</button>'+
+  '<button class="btn gold small" '+(generatingP||readyP?'disabled':'onclick="generateOpp('+o.id+',\'proposal\')"')+'>'+(generatingP?'Generating Draft…':readyP?'Proposal Draft Ready':'Generate Proposal Draft')+'</button></div>'+artifactHtml+'</article>';
 }
 
 function priorityRow(kind,title,sub,action,label){
@@ -225,12 +245,12 @@ function sortOpportunities(items,sort){
 }
 function filterOpportunities(items,status){
   if(status==="all") return items;
-  if(status==="active") return items.filter(o=>o.pursuit_status!=="pass");
+  if(status==="active") return items.filter(o=>!["pass","won","lost"].includes(o.pursuit_status));
   return items.filter(o=>o.pursuit_status===status);
 }
 function opportunityControls(){
   return '<div class="opp-controls"><div class="opp-control-group"><span>Status</span><select onchange="setOppStatusFilter(this.value)">'+
-    ['active','review','pursue','pass','all'].map(v=>'<option value="'+v+'" '+(state.oppStatus===v?'selected':'')+'>'+esc(v==='active'?'Active':nice(v))+'</option>').join('')+
+    ['active','review','pursue','submitted','won','lost','pass','all'].map(v=>'<option value="'+v+'" '+(state.oppStatus===v?'selected':'')+'>'+esc(v==='active'?'Active':nice(v))+'</option>').join('')+
     '</select></div><div class="opp-control-group"><span>Sort</span><select onchange="setOppSort(this.value)">'+
     [['fit','Best fit'],['deadline','Deadline soonest'],['newest','Newest found'],['oldest','Oldest found'],['status','Pursuit status']].map(v=>'<option value="'+v[0]+'" '+(state.oppSort===v[0]?'selected':'')+'>'+v[1]+'</option>').join('')+
     '</select></div></div>';
@@ -258,18 +278,21 @@ function intelligence(){
 window.setIntelProgram=function(id){state.intelProgram=String(id);render()};
 
 function actions(){
-  const decisions=state.data.actions.filter(a=>a.status==="proposed").sort((a,b)=>Number(b.priority_score||0)-Number(a.priority_score||0));
-  const managed=state.data.actions.filter(a=>a.status==="requested"||a.status==="in_progress").sort((a,b)=>Number(b.priority_score||0)-Number(a.priority_score||0));
+  const clientDecisions=state.data.actions.filter(a=>a.status==="proposed"&&a.owner_type!=="lucid_logic").sort((a,b)=>Number(b.priority_score||0)-Number(a.priority_score||0));
+  const llDecisions=state.data.actions.filter(a=>a.status==="proposed"&&a.owner_type==="lucid_logic").sort((a,b)=>Number(b.priority_score||0)-Number(a.priority_score||0));
+  const myWork=state.data.actions.filter(a=>a.status==="in_progress"&&a.owner_type!=="lucid_logic").sort((a,b)=>Number(b.priority_score||0)-Number(a.priority_score||0));
+  const llWork=state.data.actions.filter(a=>(a.status==="requested"||a.status==="in_progress")&&a.owner_type==="lucid_logic").sort((a,b)=>Number(b.priority_score||0)-Number(a.priority_score||0));
   const finished=state.data.actions.filter(a=>a.status==="completed"||a.status==="executed");
-  return '<div class="page-intro action-intro"><div class="page-icon">✓</div><div><h2>Action Center</h2><p>This is the short list of business actions that rise above the intelligence. A client decision does not mean the work is complete. Requested work stays visible until Lucid Logic or a connected system actually completes it.</p></div></div>'+
-  '<div class="action-layout"><section><div class="action-section-head"><div><span>NEEDS YOUR DECISION</span><h2>Recommended next actions</h2></div><div class="count-badge">'+decisions.length+'</div></div>'+
-  (decisions.map(actionCard).join("")||'<div class="empty">Nothing currently needs your decision.</div>')+'</section>'+
-  '<section><div class="action-section-head managed-head"><div><span>MANAGED WORK</span><h2>Requested or in progress</h2></div><div class="count-badge neutral">'+managed.length+'</div></div>'+
-  (managed.map(actionCard).join("")||'<div class="empty">No managed work is currently in progress.</div>')+'</section>'+
-  '<section><div class="action-section-head completed"><div><span>COMPLETED</span><h2>Actually completed</h2></div></div>'+
-  (finished.map(actionCard).join("")||'<div class="empty">No completed actions yet.</div>')+'</section></div>';
+  return '<div class="page-intro action-intro"><div class="page-icon">✓</div><div><h2>Next Steps</h2><p>Every item tells you who owns it. Your team handles business decisions, outreach and submissions. Lucid Logic only owns work you specifically request us to perform, or work that a connected system can execute.</p></div></div>'+
+  '<div class="action-layout">'+
+  '<section><div class="action-section-head"><div><span>YOUR DECISIONS</span><h2>What your team should do next</h2></div><div class="count-badge">'+clientDecisions.length+'</div></div>'+(clientDecisions.map(actionCard).join("")||'<div class="empty">No new decisions for your team.</div>')+'</section>'+
+  (myWork.length?'<section><div class="action-section-head managed-head"><div><span>YOUR NEXT STEPS</span><h2>Actions your team took on</h2></div><div class="count-badge neutral">'+myWork.length+'</div></div>'+myWork.map(actionCard).join("")+'</section>':'')+
+  '<section><div class="action-section-head managed-head"><div><span>LUCID LOGIC CAN HANDLE</span><h2>Digital work you can ask us to do</h2></div><div class="count-badge neutral">'+llDecisions.length+'</div></div>'+(llDecisions.map(actionCard).join("")||'<div class="empty">Nothing currently needs to be handed to Lucid Logic.</div>')+'</section>'+
+  (llWork.length?'<section><div class="action-section-head managed-head"><div><span>MANAGED BY LUCID LOGIC</span><h2>Requested or in progress</h2></div><div class="count-badge neutral">'+llWork.length+'</div></div>'+llWork.map(actionCard).join("")+'</section>':'')+
+  '<section><div class="action-section-head completed"><div><span>COMPLETED</span><h2>Finished actions</h2></div></div>'+(finished.map(actionCard).join("")||'<div class="empty">No completed actions yet.</div>')+'</section></div>';
 }
-const titles={overview:"Overview",opportunities:"Opportunities",intelligence:"Intelligence",actions:"Action Center"};
+
+const titles={overview:"Overview",opportunities:"Opportunities",intelligence:"Intelligence",actions:"Next Steps"};
 const views={overview,opportunities,intelligence,actions};
 function configureNavigation(){
   const oppNav=q('.nav[data-view="opportunities"]');
@@ -386,6 +409,15 @@ window.approveAction=async id=>{
   try{
     const r=await api("/api/portal/actions/"+id+"/approve",{method:"POST",body:"{}"});
     toast(r.message||"Action updated");
+    state.data=await api("/api/portal/dashboard");
+    state.view="actions";
+    render();
+  }catch(e){toast(e.message)}
+};
+window.completeMyAction=async id=>{
+  try{
+    const r=await api("/api/portal/actions/"+id+"/status",{method:"PATCH",body:JSON.stringify({status:"completed"})});
+    toast(r.message||"Marked complete");
     state.data=await api("/api/portal/dashboard");
     state.view="actions";
     render();
