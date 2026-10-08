@@ -131,19 +131,26 @@ function actionCard(a){
   const context=a.signal_title?'<div class="action-context"><span>SOURCE INTELLIGENCE</span><b>'+esc(a.signal_title)+'</b>'+(a.signal_what_changed?'<p>'+esc(a.signal_what_changed)+'</p>':'')+'</div>':"";
   const outcome=a.business_outcome||p.business_outcome||"";
   const audience=a.target_audience||p.target_audience||"";
-  return '<article id="action-'+a.id+'" class="action-card '+(pending?"needs-action":"done-action")+'">'+
-    '<div class="action-icon">'+esc(info.icon)+'</div>'+
-    '<div class="action-main"><div class="row"><div><div class="action-type">'+esc(info.label)+' · '+esc(nice(a.action_category||"general"))+'</div><h3>'+esc(a.title)+'</h3></div><div class="action-score"><strong>'+esc(a.priority_score||50)+'</strong><span>PRIORITY</span></div></div>'+
-    '<p class="action-desc">'+esc(a.rationale||info.desc)+'</p>'+
-    (outcome?'<div class="action-outcome"><span>BUSINESS OUTCOME</span><b>'+esc(outcome)+'</b>'+(audience?'<small>Target: '+esc(audience)+'</small>':'')+'</div>':'')+
-    context+tactics+
-    (body?'<div class="deliverable-preview"><div class="deliverable-label">PREPARED FOR YOU</div><div class="deliverable-body">'+esc(body)+'</div></div>':'')+
-    (note?'<p class="note">'+esc(note)+'</p>':'')+
-    (a.client_step?'<div class="client-step"><span>NEXT STEP</span><b>'+esc(a.client_step)+'</b></div>':'')+
-    actionStatusMessage(a)+
-    (pending?'<div class="action-decision-note">'+(a.owner_type==="lucid_logic"?"If you request this, Lucid Logic will own the work. It will stay visible until actually completed.":"This is your team\'s action. Adding it to My Next Steps does not send anything or involve Lucid Logic.")+'</div><div class="actions"><button class="btn gold small" onclick="approveAction('+a.id+')">'+esc(actionDecisionLabel(a))+'</button></div>':'')+
-    (a.status==="in_progress"&&a.owner_type!=="lucid_logic"?'<div class="actions"><button class="btn gold small" onclick="completeMyAction('+a.id+')">Mark Complete</button></div>':'')+
-    '<div class="action-time">'+ago(a.created_at)+'</div></div></article>';
+  const ownerClass=a.owner_type==="lucid_logic"?"owner-lucid":"owner-client";
+  const categoryClass="category-"+String(a.action_category||"general").replace(/[^a-z0-9_-]/gi,"").toLowerCase();
+  const footer=(pending
+    ?'<div class="action-footer-copy">'+(a.owner_type==="lucid_logic"?"Lucid Logic will own this only if you request it.":"Your team owns this action. Nothing is sent or completed automatically.")+'</div><button class="btn gold small" onclick="approveAction('+a.id+')">'+esc(actionDecisionLabel(a))+'</button>'
+    :(a.status==="in_progress"&&a.owner_type!=="lucid_logic"
+      ?'<div class="action-footer-copy">Your team owns this next step.</div><button class="btn gold small" onclick="completeMyAction('+a.id+')">Mark Complete</button>'
+      :'<div class="action-footer-copy">'+esc(nice(a.status))+'</div>'));
+  return '<article id="action-'+a.id+'" class="action-card '+ownerClass+' '+categoryClass+'">'+
+    '<div class="action-card-head"><div class="action-head-left"><div class="action-icon">'+esc(info.icon)+'</div><div><div class="action-type">'+esc(info.label)+' · '+esc(nice(a.action_category||"general"))+'</div><h3>'+esc(a.title)+'</h3></div></div><div class="action-score"><strong>'+esc(a.priority_score||50)+'</strong><span>PRIORITY</span></div></div>'+
+    '<div class="action-card-body">'+
+      '<p class="action-desc">'+esc(a.rationale||info.desc)+'</p>'+
+      (outcome?'<div class="action-outcome"><span>BUSINESS OUTCOME</span><b>'+esc(outcome)+'</b>'+(audience?'<small>Target: '+esc(audience)+'</small>':'')+'</div>':'')+
+      context+tactics+
+      (body?'<div class="deliverable-preview"><div class="deliverable-label">PREPARED FOR YOU</div><div class="deliverable-body">'+esc(body)+'</div></div>':'')+
+      (note?'<p class="note">'+esc(note)+'</p>':'')+
+      (a.client_step?'<div class="client-step"><span>NEXT STEP</span><b>'+esc(a.client_step)+'</b></div>':'')+
+      actionStatusMessage(a)+
+    '</div>'+
+    '<div class="action-card-footer">'+footer+'<div class="action-time">'+ago(a.created_at)+'</div></div>'+
+  '</article>';
 }
 
 function opportunityDate(value){
@@ -184,7 +191,7 @@ function opportunityCard(o){
   const source=o.document_url||o.source_url||"";
   const due=opportunityDate(o.deadline);
   const qaDue=opportunityDate(o.qa_deadline);
-  const reqs=Array.isArray(o.requirements)&&o.requirements.length?'<div class="opp-req"><b>Key requirements</b><ul>'+o.requirements.slice(0,8).map(r=>'<li>'+esc(typeof r==="string"?r:JSON.stringify(r))+'</li>').join("")+'</ul></div>':"";
+  const reqs=Array.isArray(o.requirements)&&o.requirements.length?'<div class="opp-req"><div class="subsection-label">KEY REQUIREMENTS</div><ul>'+o.requirements.slice(0,8).map(r=>'<li>'+esc(typeof r==="string"?r:JSON.stringify(r))+'</li>').join("")+'</ul></div>':"";
   const artifacts=artifactsForOpportunity(o.id);
   const qArt=artifacts.find(a=>a.artifact_type==="questions");
   const pArt=artifacts.find(a=>a.artifact_type==="proposal");
@@ -193,25 +200,34 @@ function opportunityCard(o){
   const readyQ=qArt&&qArt.status==="ready";
   const readyP=pArt&&pArt.status==="ready";
   const artifactHtml=artifacts.length?'<div class="pursuit-work-products"><div class="work-products-label">PURSUIT WORKSPACE</div>'+artifacts.map(artifactCard).join("")+'</div>':"";
-  const active=["pursue","submitted"].includes(o.pursuit_status);
-  const pursuit=active
-    ?'<div class="pursuit-active"><b>'+esc(o.pursuit_status==="submitted"?"Submitted":"Active pursuit")+'</b><span>'+(o.pursuit_status==="submitted"?"Your team has marked the response submitted. Track the outcome here.":"Your team owns the response and submission. Lucid Logic supplies the intelligence and drafting tools, but nothing is submitted for you.")+'</span></div>'
-    :"";
+  const ownershipText=o.pursuit_status==="submitted"
+    ?"Submitted by your team. Track the outcome here."
+    :o.pursuit_status==="pursue"
+      ?"Active pursuit. Your team owns the response and submission. Lucid Logic supplies research and drafting tools."
+      :"Your team owns the pursuit. Mark Pursue if you want to go after it. Nothing is submitted automatically.";
   const lifecycle=o.pursuit_status==="pursue"
     ?'<button class="btn small" onclick="setOpp('+o.id+',\'submitted\')">Mark Submitted</button>'
     :o.pursuit_status==="submitted"
       ?'<button class="btn small" onclick="setOpp('+o.id+',\'won\')">Mark Won</button><button class="btn small danger" onclick="setOpp('+o.id+',\'lost\')">Mark Lost</button>'
       :"";
-  return '<article id="opp-'+o.id+'" class="opportunity-card status-'+esc(o.pursuit_status||"review")+'"><div class="opp-card-head"><div class="row"><div><div class="meta"><span>'+esc(nice(o.opportunity_type||"opportunity"))+'</span><span>•</span><span>'+esc(nice(o.pursuit_status))+'</span></div><h3>'+esc(o.title)+'</h3></div><div class="fit-score"><strong>'+esc(o.fit_score||0)+'</strong><span>FIT</span></div></div></div>'+
-  '<p>'+esc(o.summary||"")+'</p><div class="opp-meta"><div><span>Proposal due</span><b>'+esc(due)+'</b></div><div><span>Q&A due</span><b>'+esc(qaDue)+'</b></div><div><span>Est. value</span><b>'+esc(o.estimated_value||"Unknown")+'</b></div><div><span>Geography</span><b>'+esc(o.geography||"Unknown")+'</b></div></div>'+
-  (o.recommendation?'<div class="why"><b>Lucid Logic recommendation:</b> '+esc(o.recommendation)+'</div>':'')+reqs+pursuit+
-  '<div class="opp-action-explainer"><b>Your team owns the pursuit</b><span>Mark Pursue when you want to go after it. Generate Questions and Proposal Draft are self-service tools that stay here. Your team reviews, finalizes and submits the response.</span></div>'+
-  '<div class="actions opp-actions-bar">'+(source?'<a class="btn small" target="_blank" href="'+esc(source)+'">View RFP / source ↗</a>':'')+
-  (o.pursuit_status==="review"?'<button class="btn small" onclick="setOpp('+o.id+',\'pursue\')">Mark Pursue</button>':'')+
-  (!["pass","won","lost"].includes(o.pursuit_status)?'<button class="btn small danger" onclick="setOpp('+o.id+',\'pass\')">Pass</button>':'')+
-  lifecycle+
-  '<button class="btn small" '+(generatingQ||readyQ?'disabled':'onclick="generateOpp('+o.id+',\'questions\')"')+'>'+(generatingQ?'Generating Questions…':readyQ?'Questions Ready':'Generate Questions')+'</button>'+
-  '<button class="btn gold small" '+(generatingP||readyP?'disabled':'onclick="generateOpp('+o.id+',\'proposal\')"')+'>'+(generatingP?'Generating Draft…':readyP?'Proposal Draft Ready':'Generate Proposal Draft')+'</button></div>'+artifactHtml+'</article>';
+  return '<article id="opp-'+o.id+'" class="opportunity-card status-'+esc(o.pursuit_status||"review")+'">'+
+    '<div class="opp-card-head"><div class="opp-head-copy"><div class="meta"><span>'+esc(nice(o.opportunity_type||"opportunity"))+'</span><span>•</span><span>'+esc(nice(o.pursuit_status))+'</span></div><h3>'+esc(o.title)+'</h3></div><div class="fit-score"><strong>'+esc(o.fit_score||0)+'</strong><span>FIT</span></div></div>'+
+    '<div class="opp-card-body">'+
+      '<p class="opp-summary">'+esc(o.summary||"")+'</p>'+
+      '<div class="opp-meta"><div><span>Proposal due</span><b>'+esc(due)+'</b></div><div><span>Q&A due</span><b>'+esc(qaDue)+'</b></div><div><span>Est. value</span><b>'+esc(o.estimated_value||"Unknown")+'</b></div><div><span>Geography</span><b>'+esc(o.geography||"Unknown")+'</b></div></div>'+
+      (o.recommendation?'<div class="why"><span>LUCID LOGIC RECOMMENDATION</span><b>'+esc(o.recommendation)+'</b></div>':'')+
+      reqs+
+      '<div class="opp-owner-band"><div><span>WHO OWNS THE NEXT STEP</span><b>Your team</b></div><p>'+esc(ownershipText)+'</p></div>'+
+      artifactHtml+
+    '</div>'+
+    '<div class="actions opp-actions-bar">'+(source?'<a class="btn small" target="_blank" href="'+esc(source)+'">View RFP / source ↗</a>':'')+
+      (o.pursuit_status==="review"?'<button class="btn small" onclick="setOpp('+o.id+',\'pursue\')">Mark Pursue</button>':'')+
+      (!["pass","won","lost"].includes(o.pursuit_status)?'<button class="btn small danger" onclick="setOpp('+o.id+',\'pass\')">Pass</button>':'')+
+      lifecycle+
+      '<button class="btn small" '+(generatingQ||readyQ?'disabled':'onclick="generateOpp('+o.id+',\'questions\')"')+'>'+(generatingQ?'Generating Questions…':readyQ?'Questions Ready':'Generate Questions')+'</button>'+
+      '<button class="btn gold small" '+(generatingP||readyP?'disabled':'onclick="generateOpp('+o.id+',\'proposal\')"')+'>'+(generatingP?'Generating Draft…':readyP?'Proposal Draft Ready':'Generate Proposal Draft')+'</button>'+
+    '</div>'+
+  '</article>';
 }
 
 function priorityRow(kind,title,sub,action,label){
