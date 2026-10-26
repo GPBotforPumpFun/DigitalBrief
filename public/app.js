@@ -260,8 +260,11 @@ function settingsView(){
   '<form id="openaiSettingsForm"><div class="field"><label>Settings access code</label><input id="settingsCode" type="password" value="'+esc(savedCode)+'"></div>'+
   '<div class="field"><label>OpenAI API key</label><input id="openaiKey" type="password" placeholder="sk-..."></div>'+
   '<div class="actions"><button class="btn gold" type="submit">Save + Verify Key</button>'+(st.source==="dashboard"?'<button class="btn danger" type="button" onclick="clearOpenAIKey()">Remove saved key</button>':'')+'</div></form></div>'+
-  '<div class="connector"><h3>Daily brief email delivery</h3><p class="muted">Status: <b>'+(st.emailConfigured?'Connected':'Not connected')+'</b>'+(st.emailMasked?' · '+esc(st.emailMasked):'')+'</p>'+
-  '<p class="muted">Briefs go to active client portal users. Action buttons use secure links that open the exact portal item.</p>'+
+  '<div class="connector email-master '+(st.emailDeliveryEnabled?'email-on':'email-off')+'"><div class="panel-head"><div><h3>Automated email delivery</h3><p class="muted">'+(st.emailDeliveryEnabled?'Daily briefs and urgent alerts are allowed to send.':'ALL automated client email is currently stopped. Intelligence programs can still run normally.')+'</p></div><span class="pill '+(st.emailDeliveryEnabled?'ok':'danger')+'">'+(st.emailDeliveryEnabled?'ON':'OFF')+'</span></div>'+
+  '<div class="email-master-controls"><div class="field"><label>Settings access code</label><input id="emailMasterCode" type="password" value="'+esc(savedCode)+'"></div><button class="btn '+(st.emailDeliveryEnabled?'danger':'gold')+'" type="button" onclick="setGlobalEmailDelivery('+(st.emailDeliveryEnabled?'false':'true')+')">'+(st.emailDeliveryEnabled?'STOP ALL CLIENT EMAIL':'Enable automated email')+'</button></div>'+
+  '<p class="muted">This is the master switch. When OFF, scheduled briefs, urgent alerts and manual "Send brief now" sends are blocked for every client. Test email remains available.</p></div>'+
+  '<div class="connector"><h3>Email provider</h3><p class="muted">Status: <b>'+(st.emailConfigured?'Connected':'Not connected')+'</b>'+(st.emailMasked?' · '+esc(st.emailMasked):'')+'</p>'+
+  '<p class="muted">Configure Resend here. Provider connection does not turn automated delivery on.</p>'+
   '<form id="emailSettingsForm"><div class="field"><label>Settings access code</label><input id="emailSettingsCode" type="password" value="'+esc(savedCode)+'"></div>'+
   '<div class="field"><label>Resend API key</label><input id="resendKey" type="password" placeholder="re_..."></div>'+
   '<div class="field"><label>From address</label><input id="emailFrom" value="'+esc(st.emailFrom||"")+'" placeholder="Lucid Logic Intelligence &lt;intel@example.com&gt;"></div>'+
@@ -366,6 +369,16 @@ function bindSettingsForm(){
     };
   }
 }
+window.setGlobalEmailDelivery=async function(enabled){
+  const code=(q("#emailMasterCode")?q("#emailMasterCode").value.trim():"")||localStorage.getItem("intelSettingsCode")||"";
+  if(!code){toast("Enter the settings access code");return}
+  try{
+    await api("/api/settings/email-delivery",{method:"PATCH",headers:{"X-Settings-Code":code},body:JSON.stringify({enabled:Boolean(enabled)})});
+    localStorage.setItem("intelSettingsCode",code);
+    toast(enabled?"Automated client email enabled":"All automated client email stopped");
+    await load();
+  }catch(x){toast(x.message)}
+};
 window.clearOpenAIKey=async function(){
   const code=(q("#settingsCode")?q("#settingsCode").value:"")||localStorage.getItem("intelSettingsCode")||"";
   if(!code){toast("Enter the settings access code");return}
@@ -438,7 +451,7 @@ window.sendClientBrief=async function(clientId){
   toast("Sending brief...");
   try{
     const r=await api("/api/clients/"+clientId+"/send-brief",{method:"POST",body:"{}"});
-    if(r.skipped){toast("Email delivery is not configured in Settings");return}
+    if(r.skipped){toast(r.reason==="email_delivery_disabled"?"Automated email is OFF in Settings":"Email delivery is not configured in Settings");return}
     if(r.failed&&r.results&&r.results[0]&&r.results[0].error) toast("Brief failed: "+r.results[0].error);
     else toast(r.sent+" brief"+(r.sent===1?"":"s")+" sent"+(r.failed?" · "+r.failed+" failed":""));
     window.openClient(clientId);
