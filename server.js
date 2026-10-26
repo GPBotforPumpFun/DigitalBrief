@@ -178,6 +178,10 @@ async function getEmailConfig(){
   const dbFrom=await getSetting("email_from");
   return {key:ENV_RESEND_KEY||dbKey,from:dbFrom||ENV_EMAIL_FROM};
 }
+async function emailDeliveryEnabled(){
+  const v=await getSetting("email_delivery_enabled");
+  return String(v||"false").toLowerCase()==="true";
+}
 function fromDomain(value){
   const m=String(value||"").match(/<?[A-Z0-9._%+-]+@([A-Z0-9.-]+\.[A-Z]{2,})>?/i);
   return m?m[1].toLowerCase():"";
@@ -447,6 +451,7 @@ function briefText(user,client,data){
   return lines.filter(Boolean).join("\n");
 }
 async function sendDailyBriefs(onlyClientId=null,options={}){
+  if(!(await emailDeliveryEnabled())) return {sent:0,skipped:true,reason:"email_delivery_disabled"};
   const cfg=await getEmailConfig();
   if(!cfg.key||!cfg.from) return {sent:0,skipped:true,reason:"email_not_configured"};
   const args=[],where=["u.active=true","u.brief_recipient=true","c.status='active'"];
@@ -475,6 +480,7 @@ async function sendDailyBriefs(onlyClientId=null,options={}){
   return {sent:results.filter(x=>x.status==="sent").length,failed:results.filter(x=>x.status==="failed").length,results:results};
 }
 async function sendUrgentAlertsForRun(runId,clientId){
+  if(!(await emailDeliveryEnabled())) return {sent:0,skipped:true,reason:"email_delivery_disabled"};
   const cfg=await getEmailConfig();
   if(!cfg.key||!cfg.from) return {sent:0,skipped:true};
   const ds=await deliverySettings(clientId);
@@ -1233,7 +1239,7 @@ app.post("/api/actions/:id/dismiss",async function(req){
 });
 app.get("/api/settings/status",async function(){
   const key=await getAIKey(),email=await getEmailConfig(),dbEmailKey=await getSetting("resend_api_key");
-  return {aiConfigured:Boolean(key),source:(await getSetting("openai_api_key"))?"dashboard":(ENV_AI_KEY?"environment":"none"),masked:key?("••••"+key.slice(-4)):"",emailConfigured:Boolean(email.key&&email.from),emailSource:ENV_RESEND_KEY?"environment":(dbEmailKey?"dashboard":"none"),emailMasked:email.key?("••••"+email.key.slice(-4)):"",emailFrom:email.from||""};
+  return {aiConfigured:Boolean(key),source:(await getSetting("openai_api_key"))?"dashboard":(ENV_AI_KEY?"environment":"none"),masked:key?("••••"+key.slice(-4)):"",emailConfigured:Boolean(email.key&&email.from),emailDeliveryEnabled:await emailDeliveryEnabled(),emailSource:ENV_RESEND_KEY?"environment":(dbEmailKey?"dashboard":"none"),emailMasked:email.key?("••••"+email.key.slice(-4)):"",emailFrom:email.from||""};
 });
 app.post("/api/settings/openai",async function(req,reply){
   if(!SETTINGS_CODE) return reply.code(503).send({error:"Settings access code is not configured"});
@@ -1253,6 +1259,14 @@ app.delete("/api/settings/openai",async function(req,reply){
   if(req.headers["x-settings-code"]!==SETTINGS_CODE) return reply.code(401).send({error:"Invalid settings code"});
   await pool.query("delete from intel_settings where setting_key='openai_api_key'");
   return {ok:true,aiConfigured:Boolean(ENV_AI_KEY)};
+});
+
+app.patch("/api/settings/email-delivery",async function(req,reply){
+  if(!SETTINGS_CODE) return reply.code(503).send({error:"Settings access code is not configured"});
+  if(req.headers["x-settings-code"]!==SETTINGS_CODE) return reply.code(401).send({error:"Invalid settings code"});
+  const enabled=Boolean((req.body||{}).enabled);
+  await setSetting("email_delivery_enabled",enabled?"true":"false");
+  return {ok:true,enabled:enabled};
 });
 
 app.post("/api/settings/email",async function(req,reply){
