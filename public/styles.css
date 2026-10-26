@@ -12,3 +12,5 @@
 .admin-action-summary{display:grid;grid-template-columns:repeat(2,minmax(0,220px));gap:10px;margin:16px 0}.admin-action-summary>div{border:1px solid var(--line);border-radius:10px;background:#f8f9fb;padding:12px}.admin-action-summary b{display:block;font:700 24px "Space Grotesk"}.admin-action-summary span{font-size:10px;color:var(--muted)}.raw-actions{margin-top:28px;border-top:1px solid var(--line);padding-top:14px}.raw-actions summary{cursor:pointer;font-weight:800;font-size:13px}.raw-help{margin:7px 0 12px;font-size:11px}
 
 .admin-owner{font-size:11px;background:#f7f8fa;border-radius:7px;padding:7px 9px;margin:8px 0;color:#56606c}.admin-owner b{font-weight:800}
+
+.email-master{border-width:2px}.email-master.email-off{border-color:#d55d5d;background:#fff8f8}.email-master.email-on{border-color:#7db796;background:#f7fcf9}.email-master-controls{display:flex;gap:12px;align-items:end;margin-top:14px}.email-master-controls .field{flex:1;margin:0}.pill.danger{background:#fde9e9;color:#a62f2f}.pill.ok{background:#e8f6ef;color:#15734f}@media(max-width:760px){.email-master-controls{align-items:stretch;flex-direction:column}}
